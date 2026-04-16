@@ -1,0 +1,1124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Log Ingestion Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #f5f7fa;
+      --surface:     #ffffff;
+      --surface-2:   #f0f2f5;
+      --border:      #e2e6ed;
+      --border-focus:#4f46e5;
+      --text-1:      #111827;
+      --text-2:      #4b5563;
+      --text-3:      #9ca3af;
+      --accent:      #4f46e5;
+      --accent-bg:   #ede9ff;
+      --accent-hover:#4338ca;
+      --success:     #16a34a;
+      --warning:     #d97706;
+      --error:       #dc2626;
+      --shadow-sm:   0 1px 3px rgba(0,0,0,.07), 0 1px 2px rgba(0,0,0,.04);
+      --shadow-md:   0 4px 16px rgba(0,0,0,.10);
+      --shadow-lg:   0 12px 40px rgba(0,0,0,.14);
+      --radius:      10px;
+      --radius-sm:   7px;
+      --tr:          0.18s ease;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text-1);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    /* ── Top Bar ─────────────────────── */
+    .topbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 32px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 200;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .topbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-icon {
+      width: 32px; height: 32px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-size: 16px;
+    }
+
+    .topbar h1 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-1);
+      letter-spacing: -0.3px;
+    }
+
+    .topbar-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-2);
+      background: var(--surface-2);
+      padding: 5px 12px;
+      border-radius: 100px;
+      border: 1px solid var(--border);
+    }
+
+    .status-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      flex-shrink: 0;
+      animation: blink 2.5s ease-in-out infinite;
+    }
+
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+    /* ── Filter Bar ──────────────────── */
+    .filter-bar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 32px;
+      display: flex;
+      gap: 12px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+
+    .filter-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      position: relative;
+    }
+
+    .filter-group label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-2);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* ── Combobox ────────────────────── */
+    .combo-wrap {
+      position: relative;
+      width: 230px;
+    }
+
+    .combo-input {
+      width: 100%;
+      height: 38px;
+      padding: 0 32px 0 12px;
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      font-family: 'Inter', sans-serif;
+      color: var(--text-1);
+      transition: border-color var(--tr), box-shadow var(--tr);
+      outline: none;
+    }
+
+    .combo-input:focus {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(79,70,229,.12);
+    }
+
+    .combo-input::placeholder { color: var(--text-3); }
+
+    .combo-chevron {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      pointer-events: none;
+      color: var(--text-3);
+      transition: transform var(--tr);
+    }
+
+    .combo-wrap.open .combo-chevron { transform: translateY(-50%) rotate(180deg); }
+
+    /* Dropdown list */
+    .combo-list {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      width: 100%;
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      box-shadow: var(--shadow-md);
+      z-index: 300;
+      overflow-y: auto;
+      max-height: 240px; /* ~15 items */
+      display: none;
+    }
+
+    .combo-wrap.open .combo-list { display: block; }
+
+    .combo-item {
+      padding: 9px 12px;
+      font-size: 13px;
+      color: var(--text-1);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: background var(--tr);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .combo-item:last-child { border-bottom: none; }
+    .combo-item:hover, .combo-item.active { background: var(--accent-bg); color: var(--accent); }
+
+    .combo-item em {
+      font-style: normal;
+      background: var(--accent-bg);
+      color: var(--accent);
+      border-radius: 3px;
+      padding: 0 2px;
+    }
+
+    .combo-empty {
+      padding: 12px;
+      font-size: 13px;
+      color: var(--text-3);
+      text-align: center;
+    }
+
+    .combo-loading {
+      padding: 12px;
+      font-size: 13px;
+      color: var(--text-3);
+      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    /* ── Buttons ─────────────────────── */
+    .btn {
+      height: 38px;
+      padding: 0 18px;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      font-family: 'Inter', sans-serif;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all var(--tr);
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+      box-shadow: 0 1px 4px rgba(79,70,229,.3);
+    }
+
+    .btn-primary:hover { background: var(--accent-hover); box-shadow: 0 2px 8px rgba(79,70,229,.35); }
+
+    .btn-secondary {
+      background: var(--surface);
+      color: var(--text-2);
+      border: 1.5px solid var(--border);
+    }
+
+    .btn-secondary:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    .filter-actions { display: flex; gap: 8px; }
+
+    /* ── Info Bar ────────────────────── */
+    .info-bar {
+      padding: 10px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .info-bar .count {
+      font-size: 13px;
+      color: var(--text-2);
+    }
+
+    .info-bar .count strong { color: var(--text-1); }
+
+    /* ── Table ───────────────────────── */
+    .table-wrap {
+      padding: 20px 32px;
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      background: var(--surface);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    thead th {
+      background: var(--surface-2);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-2);
+      padding: 11px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+
+    tbody tr {
+      cursor: pointer;
+      transition: background var(--tr);
+    }
+
+    tbody tr:hover { background: #f5f4ff; }
+
+    tbody td {
+      padding: 13px 16px;
+      font-size: 13px;
+      color: var(--text-2);
+      border-bottom: 1px solid var(--border);
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+
+    tbody tr:last-child td { border-bottom: none; }
+    tbody td:first-child { color: var(--text-1); font-weight: 500; }
+
+    .pill {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 100px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+
+    .pill-project { background: #ede9ff; color: #5b21b6; }
+    .pill-device  { background: #dcfce7; color: #15803d; }
+
+    .trace-mono {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 11px;
+      color: var(--text-3);
+    }
+
+    /* ── Arrow column ────────────────── */
+    .row-arrow {
+      color: var(--text-3);
+      font-size: 14px;
+      text-align: right !important;
+    }
+
+    /* ── Empty / Loading ─────────────── */
+    .empty-state {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      padding: 64px 32px;
+      color: var(--text-3);
+    }
+
+    .empty-state.show { display: flex; }
+    .empty-state svg { margin-bottom: 14px; }
+    .empty-state p { font-size: 14px; color: var(--text-2); }
+    .empty-state span { font-size: 13px; margin-top: 4px; }
+
+    .loading-row td {
+      text-align: center;
+      padding: 32px;
+    }
+
+    /* ── Pagination ──────────────────── */
+    .pagination {
+      display: none;
+      justify-content: center;
+      padding: 0 32px 24px;
+    }
+
+    .pagination.show { display: flex; }
+
+    /* ── Modal ───────────────────────── */
+    .overlay {
+      position: fixed; inset: 0;
+      background: rgba(17,24,39,.35);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 400;
+    }
+
+    .overlay.show { display: flex; }
+
+    @keyframes pop {
+      from { opacity:0; transform: scale(.96) translateY(10px); }
+      to   { opacity:1; transform: scale(1)   translateY(0); }
+    }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      width: 92%;
+      max-width: 700px;
+      max-height: 88vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: var(--shadow-lg);
+      animation: pop .2s ease;
+    }
+
+    .modal-head {
+      padding: 18px 22px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .modal-head h2 { font-size: 15px; font-weight: 600; }
+
+    .modal-head-actions { display: flex; gap: 6px; }
+
+    .icon-btn {
+      width: 34px; height: 34px;
+      border: 1.5px solid var(--border);
+      background: transparent;
+      border-radius: var(--radius-sm);
+      color: var(--text-2);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all var(--tr);
+      font-family: inherit;
+    }
+
+    .icon-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+
+    .modal-body {
+      padding: 22px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .section-label {
+      font-size: 10.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      color: var(--text-3);
+      margin-bottom: 8px;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .meta-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 11px 13px;
+    }
+
+    .meta-card .lbl {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: var(--text-3);
+      margin-bottom: 3px;
+    }
+
+    .meta-card .val {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-1);
+      word-break: break-all;
+    }
+
+    .json-section { margin-bottom: 20px; }
+    .json-section:last-child { margin-bottom: 0; }
+
+    .json-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .json-block {
+      background: #f8f9fb;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 14px 16px;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 12.5px;
+      line-height: 1.75;
+      color: var(--text-2);
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* JSON syntax colors — light mode */
+    .jk { color: #6d28d9; }   /* key */
+    .js { color: #059669; }   /* string */
+    .jn { color: #d97706; }   /* number */
+    .jb { color: #db2777; }   /* bool */
+    .jz { color: #94a3b8; font-style: italic; }  /* null */
+
+    /* ── Toast ───────────────────────── */
+    .toast {
+      position: fixed;
+      bottom: 24px; right: 24px;
+      background: var(--text-1);
+      color: white;
+      padding: 11px 18px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      box-shadow: var(--shadow-md);
+      opacity: 0;
+      transform: translateY(12px);
+      transition: all .25s ease;
+      z-index: 999;
+      pointer-events: none;
+    }
+
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    /* ── Spinner ─────────────────────── */
+    .spin {
+      width: 16px; height: 16px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: rotate .6s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes rotate { to { transform: rotate(360deg); } }
+
+    @media (max-width: 700px) {
+      .topbar, .filter-bar, .info-bar, .table-wrap, .pagination { padding-left: 16px; padding-right: 16px; }
+      .combo-wrap { width: 100%; }
+      .filter-bar { flex-direction: column; align-items: stretch; }
+      .filter-actions .btn { flex: 1; justify-content: center; }
+    }
+
+    /* ── Login Overlay ───────────────────── */
+    .login-overlay {
+      position: fixed; inset: 0;
+      background: rgba(17,24,39,.55);
+      backdrop-filter: blur(6px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9000;
+    }
+    .login-overlay.show { display: flex; }
+    .login-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 36px 36px 28px;
+      width: 360px;
+      box-shadow: var(--shadow-lg);
+      animation: pop .2s ease;
+    }
+    .login-box h2 {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-1);
+      margin-bottom: 6px;
+    }
+    .login-box p {
+      font-size: 13px;
+      color: var(--text-2);
+      margin-bottom: 20px;
+    }
+    .login-input {
+      width: 100%;
+      height: 42px;
+      padding: 0 14px;
+      background: var(--surface-2);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      font-family: 'Inter', sans-serif;
+      color: var(--text-1);
+      margin-bottom: 12px;
+      outline: none;
+      transition: border-color var(--tr), box-shadow var(--tr);
+    }
+    .login-input:focus {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(79,70,229,.12);
+    }
+    .login-error {
+      font-size: 12px;
+      color: var(--error);
+      margin-bottom: 8px;
+      display: none;
+    }
+    .login-error.show { display: block; }
+
+    /* ── Date inputs ─────────────────────── */
+    .date-input {
+      height: 38px;
+      padding: 0 10px;
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-family: 'Inter', sans-serif;
+      color: var(--text-1);
+      transition: border-color var(--tr);
+      outline: none;
+    }
+    .date-input:focus {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(79,70,229,.12);
+    }
+  </style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<header class="topbar">
+  <div class="topbar-brand">
+    <div class="brand-icon">📋</div>
+    <h1>Log Dashboard</h1>
+  </div>
+  <div class="topbar-status">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">Checking…</span>
+  </div>
+</header>
+
+<!-- Login Overlay -->
+<div class="login-overlay show" id="loginOverlay">
+  <div class="login-box">
+    <h2>🔐 Dashboard Access</h2>
+    <p>Enter your dashboard token to continue.</p>
+    <input class="login-input" id="loginToken" type="password" placeholder="Dashboard token…" autocomplete="off">
+    <div class="login-error" id="loginError">Invalid token — please try again.</div>
+    <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="submitLogin()">Continue</button>
+  </div>
+</div>
+
+<!-- Filter Bar -->
+<div class="filter-bar">
+  <!-- Project ID combobox -->
+  <div class="filter-group">
+    <label>Project ID</label>
+    <div class="combo-wrap" id="wrapProject">
+      <input class="combo-input" id="inProject" placeholder="Search or select…" autocomplete="off" spellcheck="false">
+      <svg class="combo-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+      <div class="combo-list" id="listProject"></div>
+    </div>
+  </div>
+
+  <!-- Device ID combobox -->
+  <div class="filter-group">
+    <label>Device ID</label>
+    <div class="combo-wrap" id="wrapDevice">
+      <input class="combo-input" id="inDevice" placeholder="Search or select…" autocomplete="off" spellcheck="false">
+      <svg class="combo-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+      <div class="combo-list" id="listDevice"></div>
+    </div>
+  </div>
+
+  <!-- Date Range -->
+  <div class="filter-group">
+    <label>From</label>
+    <input type="datetime-local" class="date-input" id="fromDate">
+  </div>
+  <div class="filter-group">
+    <label>To</label>
+    <input type="datetime-local" class="date-input" id="toDate">
+  </div>
+
+  <div class="filter-actions">
+    <button class="btn btn-primary" id="btnSearch" onclick="searchLogs()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      Search
+    </button>
+    <button class="btn btn-secondary" id="btnExport" onclick="exportLogs()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Export
+    </button>
+  </div>
+</div>
+
+<!-- Info Bar -->
+<div class="info-bar">
+  <span class="count">Showing <strong id="logCount">—</strong> logs</span>
+</div>
+
+<!-- Table -->
+<div class="table-wrap">
+  <table id="logTable" style="display:none">
+    <thead>
+      <tr>
+        <th>Timestamp</th>
+        <th>Project</th>
+        <th>Device</th>
+        <th>Log Preview</th>
+        <th>Trace ID</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="logBody"></tbody>
+  </table>
+  <!-- Empty state -->
+  <div class="empty-state" id="emptyState">
+    <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#d1d5db" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+    <p>No logs found</p>
+    <span>Apply filters and click Search</span>
+  </div>
+</div>
+
+<!-- Pagination -->
+<div class="pagination" id="paginationBar">
+  <button class="btn btn-secondary" style="min-width:160px;justify-content:center" onclick="loadMore()">Load More</button>
+</div>
+
+<!-- Detail Modal -->
+<div class="overlay" id="overlay" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-head">
+      <h2>Log Detail</h2>
+      <div class="modal-head-actions">
+        <button class="icon-btn" title="Copy all" onclick="copyAll()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+        <button class="icon-btn" title="Close" onclick="document.getElementById('overlay').classList.remove('show')">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+const API = window.location.origin;
+let allLogs = [], nextCursor = null, currentLog = null;
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+function getToken() { return sessionStorage.getItem('dashboard_token') || ''; }
+
+function authHeaders() {
+  return { 'X-Dashboard-Token': getToken() };
+}
+
+function showLogin(error) {
+  if (error) document.getElementById('loginError').classList.add('show');
+  document.getElementById('loginOverlay').classList.add('show');
+}
+
+async function submitLogin() {
+  const tok = document.getElementById('loginToken').value.trim();
+  if (!tok) return;
+  // Verify token against a protected endpoint
+  const res = await fetch(`${API}/logs/distinct?field=project_id&limit=1`, {
+    headers: { 'X-Dashboard-Token': tok }
+  });
+  if (res.ok) {
+    sessionStorage.setItem('dashboard_token', tok);
+    document.getElementById('loginOverlay').classList.remove('show');
+    document.getElementById('loginError').classList.remove('show');
+    document.getElementById('loginToken').value = '';
+    checkHealth();
+  } else {
+    document.getElementById('loginError').classList.add('show');
+  }
+}
+
+// Init — show login if no token stored
+if (!getToken()) {
+  showLogin(false);
+} else {
+  document.getElementById('loginOverlay').classList.remove('show');
+}
+
+document.getElementById('loginToken').addEventListener('keydown', e => {
+  if (e.key === 'Enter') submitLogin();
+});
+
+
+// ── Health ─────────────────────────────────────────────────────────────────
+async function checkHealth() {
+  if (!getToken()) return;
+  try {
+    const d = await fetch(`${API}/health`).then(r => r.json());
+    document.getElementById('statusText').textContent = `Queue: ${d.queue_depth} | DLQ: ${d.dlq_depth}`;
+    document.getElementById('statusDot').style.background = 'var(--success)';
+  } catch {
+    document.getElementById('statusText').textContent = 'Disconnected';
+    document.getElementById('statusDot').style.background = 'var(--error)';
+  }
+}
+checkHealth();
+setInterval(checkHealth, 30000);
+
+// ── Combobox factory ───────────────────────────────────────────────────────
+function initCombo(field, inputId, listId, wrapId) {
+  const input = document.getElementById(inputId);
+  const list  = document.getElementById(listId);
+  const wrap  = document.getElementById(wrapId);
+  let timer = null, lastQ = null;
+
+  async function load(q) {
+    if (q === lastQ) return;
+    lastQ = q;
+    list.innerHTML = '<div class="combo-loading"><div class="spin"></div> Loading…</div>';
+    try {
+      const params = new URLSearchParams({ field, limit: 15 });
+      if (q) params.set('prefix', q);
+      const project = document.getElementById('inProject').value.trim();
+    const device  = document.getElementById('inDevice').value.trim();
+    const params  = new URLSearchParams({ field, limit: 15 });
+    if (q) params.set('prefix', q);
+    if (project) params.set('project_id_filter', project);
+    if (device)  params.set('device_id_filter', device);
+
+    const d = await fetch(`${API}/logs/distinct?${params}`, {
+      headers: authHeaders()
+    }).then(r => {
+      if (r.status === 401) { showLogin(true); throw new Error('Unauthorized'); }
+      return r.json();
+    });
+      renderList(d.values || [], q);
+    } catch {
+      list.innerHTML = '<div class="combo-empty">Failed to load</div>';
+    }
+  }
+
+  function renderList(values, q) {
+    if (!values.length) {
+      list.innerHTML = '<div class="combo-empty">No results</div>';
+      return;
+    }
+    list.innerHTML = values.map(v => {
+      const display = q ? v.replace(new RegExp(`^(${esc(q)})`, 'i'), '<em>$1</em>') : v;
+      return `<div class="combo-item" data-val="${esc(v)}">${display}</div>`;
+    }).join('');
+    list.querySelectorAll('.combo-item').forEach(el => {
+      el.addEventListener('click', () => {
+        input.value = el.dataset.val;
+        closeList();
+        searchLogs();
+      });
+    });
+  }
+
+  function openList() {
+    wrap.classList.add('open');
+    load(input.value.trim());
+  }
+
+  function closeList() { wrap.classList.remove('open'); }
+
+  input.addEventListener('focus', openList);
+  input.addEventListener('input', () => {
+    wrap.classList.add('open');
+    clearTimeout(timer);
+    timer = setTimeout(() => load(input.value.trim()), 250);
+  });
+
+  // Close on outside click
+  document.addEventListener('click', e => {
+    if (!wrap.contains(e.target)) closeList();
+  });
+
+  // Keyboard navigation
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeList(); input.blur(); }
+    if (e.key === 'Enter')  { closeList(); searchLogs(); }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const items = [...list.querySelectorAll('.combo-item')];
+      const cur   = list.querySelector('.combo-item.active');
+      let idx     = items.indexOf(cur);
+      items.forEach(i => i.classList.remove('active'));
+      idx = e.key === 'ArrowDown' ? Math.min(idx + 1, items.length - 1) : Math.max(idx - 1, 0);
+      if (items[idx]) { items[idx].classList.add('active'); items[idx].scrollIntoView({ block: 'nearest' }); }
+    }
+    if (e.key === 'Enter') {
+      const cur = list.querySelector('.combo-item.active');
+      if (cur) { input.value = cur.dataset.val; closeList(); searchLogs(); }
+    }
+  });
+}
+
+initCombo('project_id', 'inProject', 'listProject', 'wrapProject');
+initCombo('device_id',  'inDevice',  'listDevice',  'wrapDevice');
+
+// ── Search / Fetch ─────────────────────────────────────────────────────────
+async function searchLogs() {
+  allLogs = []; nextCursor = null;
+  document.getElementById('logBody').innerHTML = '';
+  await fetchLogs(true);
+}
+
+async function fetchLogs(fresh) {
+  const project  = document.getElementById('inProject').value.trim();
+  const device   = document.getElementById('inDevice').value.trim();
+  const fromDate = document.getElementById('fromDate').value;
+  const toDate   = document.getElementById('toDate').value;
+  const params  = new URLSearchParams({ limit: 50 });
+  if (project)  params.set('project_id', project);
+  if (device)   params.set('device_id',  device);
+  if (fromDate) params.set('from_dt', new Date(fromDate).toISOString());
+  if (toDate)   params.set('to_dt',   new Date(toDate).toISOString());
+  if (nextCursor) params.set('last_id', nextCursor);
+
+  setLoading(true);
+  try {
+    const res = await fetch(`${API}/logs?${params}`, { headers: authHeaders() });
+    if (res.status === 401) { showLogin(true); setLoading(false); return; }
+    const d = await res.json();
+    allLogs = allLogs.concat(d.logs);
+    nextCursor = d.next_cursor;
+    appendRows(d.logs);
+    document.getElementById('logCount').textContent = allLogs.length + (nextCursor ? '+' : '');
+    document.getElementById('logTable').style.display = allLogs.length ? '' : 'none';
+    document.getElementById('emptyState').classList.toggle('show', allLogs.length === 0);
+    document.getElementById('paginationBar').classList.toggle('show', !!nextCursor);
+  } catch(e) {
+    toast('❌ ' + e.message);
+  }
+  setLoading(false);
+}
+
+function loadMore() { fetchLogs(false); }
+
+// ── Render rows ────────────────────────────────────────────────────────────
+function appendRows(logs) {
+  const tbody = document.getElementById('logBody');
+  logs.forEach((log, i) => {
+    const idx = allLogs.length - logs.length + i;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${fmtTime(log.received_at)}</td>
+      <td><span class="pill pill-project">${e(log.project_id||'—')}</span></td>
+      <td><span class="pill pill-device">${e(log.device_id||'—')}</span></td>
+      <td>${e(preview(log.log))}</td>
+      <td><span class="trace-mono">${log.trace_id ? log.trace_id.slice(0,8)+'…' : '—'}</span></td>
+      <td class="row-arrow">›</td>
+    `;
+    tr.addEventListener('click', () => openDetail(idx));
+    tbody.appendChild(tr);
+  });
+}
+
+function preview(obj) {
+  if (!obj || typeof obj !== 'object') return '—';
+  const m = obj.message || obj.msg || obj.error;
+  if (m) return String(m).slice(0, 90);
+  const keys = Object.keys(obj);
+  return keys.length ? `{${keys.slice(0,3).join(', ')}${keys.length>3?'…':''}}` : '{}';
+}
+
+function fmtTime(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-IN',{day:'2-digit',month:'short'}) + ' '
+         + d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+  } catch { return iso || '—'; }
+}
+
+// ── Detail Modal ───────────────────────────────────────────────────────────
+function openDetail(idx) {
+  currentLog = allLogs[idx];
+  if (!currentLog) return;
+  document.getElementById('modalBody').innerHTML = `
+    <div class="section-label">Metadata</div>
+    <div class="meta-grid">
+      <div class="meta-card"><div class="lbl">Received At</div><div class="val">${fmtTime(currentLog.received_at)}</div></div>
+      <div class="meta-card"><div class="lbl">Project ID</div><div class="val">${e(currentLog.project_id||'—')}</div></div>
+      <div class="meta-card"><div class="lbl">Device ID</div><div class="val">${e(currentLog.device_id||'—')}</div></div>
+      <div class="meta-card"><div class="lbl">Trace ID</div><div class="val">${e(currentLog.trace_id||'—')}</div></div>
+    </div>
+    <div class="json-section">
+      <div class="json-head">
+        <div class="section-label" style="margin:0">Form Data</div>
+        <button class="icon-btn" onclick="copyField('form_data')" title="Copy form_data">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+      </div>
+      <div class="json-block">${highlight(currentLog.form_data)}</div>
+    </div>
+    <div class="json-section">
+      <div class="json-head">
+        <div class="section-label" style="margin:0">Log</div>
+        <button class="icon-btn" onclick="copyField('log')" title="Copy log">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+      </div>
+      <div class="json-block">${highlight(currentLog.log)}</div>
+    </div>
+  `;
+  document.getElementById('overlay').classList.add('show');
+}
+
+function closeModal(e) {
+  if (e.target === document.getElementById('overlay'))
+    document.getElementById('overlay').classList.remove('show');
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('overlay').classList.remove('show');
+});
+
+// ── JSON Syntax Highlight ──────────────────────────────────────────────────
+function highlight(obj) {
+  if (obj === null || obj === undefined) return '<span class="jz">null</span>';
+  return JSON.stringify(obj, null, 2).replace(
+    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+    m => {
+      let c = 'jn';
+      if (/^"/.test(m))     c = /:$/.test(m) ? 'jk' : 'js';
+      else if (/true|false/.test(m)) c = 'jb';
+      else if (/null/.test(m))       c = 'jz';
+      return `<span class="${c}">${m}</span>`;
+    }
+  );
+}
+
+// ── Copy ───────────────────────────────────────────────────────────────────
+function copyField(f) {
+  if (!currentLog) return;
+  navigator.clipboard.writeText(JSON.stringify(currentLog[f], null, 2))
+    .then(() => toast('✅ Copied ' + f));
+}
+
+function copyAll() {
+  if (!currentLog) return;
+  navigator.clipboard.writeText(JSON.stringify({
+    project_id: currentLog.project_id,
+    device_id:  currentLog.device_id,
+    trace_id:   currentLog.trace_id,
+    received_at:currentLog.received_at,
+    form_data:  currentLog.form_data,
+    log:        currentLog.log,
+  }, null, 2)).then(() => toast('✅ Copied full record'));
+}
+
+// ── Export ─────────────────────────────────────────────────────────────────
+async function exportLogs() {
+  const project = document.getElementById('inProject').value.trim();
+  const device  = document.getElementById('inDevice').value.trim();
+  const fromDate = document.getElementById('fromDate').value;
+  const toDate   = document.getElementById('toDate').value;
+  if (!project && !device && !fromDate) { toast('⚠️ Apply at least one filter first'); return; }
+
+  const btn = document.getElementById('btnExport');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spin"></div> Exporting…';
+
+  const params = new URLSearchParams();
+  if (project)  params.set('project_id', project);
+  if (device)   params.set('device_id',  device);
+  if (fromDate) params.set('from_dt', new Date(fromDate).toISOString());
+  if (toDate)   params.set('to_dt',   new Date(toDate).toISOString());
+
+  try {
+    const res = await fetch(`${API}/logs/export?${params}`, { headers: authHeaders() });
+    if (res.status === 401) { showLogin(true); }
+    else if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = `logs_${project||'all'}_${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('✅ Export downloaded');
+  } catch(err) {
+    toast('❌ Export failed: ' + err.message);
+  }
+  btn.disabled = false;
+  btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Export`;
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function setLoading(on) {
+  const btn = document.getElementById('btnSearch');
+  btn.disabled = on;
+  btn.innerHTML = on
+    ? '<div class="spin"></div> Searching…'
+    : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Search`;
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+function e(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Initial state
+document.getElementById('emptyState').classList.add('show');
+</script>
+</body>
+</html>

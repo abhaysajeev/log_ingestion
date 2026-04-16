@@ -1,0 +1,169 @@
+================================================================================
+ LOG INGESTION PLATFORM — DEPLOYMENT GUIDE
+ VPS: DOCKERCUSTOVIA (3.8 GB RAM, 2 CPU, 54 GB free disk)
+ Existing: parking-sms-service (78 MB / 512 MB cap, no port conflicts)
+================================================================================
+
+PREREQUISITE: All docker commands on this VPS require sudo.
+
+
+STEP 1 — UPLOAD PROJECT TO VPS
+────────────────────────────────────────────────────────────────────────────────
+
+  From your local machine:
+
+  scp -r "/home/silpc-068/Desktop/2026/Log Ingestion/log-ingestion" administrator@YOUR_VPS_IP:/home/administrator/log-ingestion
+
+
+STEP 2 — SSH INTO VPS
+────────────────────────────────────────────────────────────────────────────────
+
+  ssh administrator@YOUR_VPS_IP
+  cd /home/administrator/log-ingestion
+
+
+STEP 3 — GENERATE SECRETS
+────────────────────────────────────────────────────────────────────────────────
+
+  Run these to generate strong random values:
+
+  openssl rand -hex 16    # → use as MONGO_PASSWORD
+  openssl rand -hex 32    # → use as API_KEY
+  openssl rand -hex 32    # → use as ADMIN_TOKEN
+
+  Edit .env and paste the values:
+
+  nano .env
+
+  The file should look like:
+
+    MONGO_PASSWORD=<paste_mongo_password>
+    API_KEY=<paste_api_key>
+    RATE_LIMIT_PER_DEVICE=5000
+    QUEUE_BACKPRESSURE_LIMIT=50000
+    ADMIN_TOKEN=<paste_admin_token>
+
+  Save: Ctrl+O, Enter, Ctrl+X
+
+
+STEP 4 — SSL CERTIFICATE
+────────────────────────────────────────────────────────────────────────────────
+
+  Option A: Self-signed (for testing / internal use):
+
+  openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout nginx/certs/privkey.pem \
+    -out nginx/certs/fullchain.pem \
+    -subj "/CN=your-domain.com"
+
+  Option B: Real certificate with Certbot (for production):
+
+  sudo apt install -y certbot
+  sudo certbot certonly --standalone -d your-domain.com
+  sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem nginx/certs/
+  sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem nginx/certs/
+
+
+STEP 5 — LAUNCH
+────────────────────────────────────────────────────────────────────────────────
+
+  sudo docker-compose up -d --build
+
+  First run will take 3-5 minutes (downloads mongo:7, redis:7, python:3.12,
+  nginx:alpine images and builds FastAPI + Worker containers).
+
+
+STEP 6 — VERIFY DEPLOYMENT
+────────────────────────────────────────────────────────────────────────────────
+
+  # 1. All containers should be "Up" and healthy
+  sudo docker-compose ps
+
+  # 2. Health check (should return {"status":"ok","queue_depth":0,...})
+  curl http://localhost:8000/health
+
+  # 3. Send a test log batch
+  curl -X POST http://localhost:8000/ingest/batch \
+    -H "X-API-Key: YOUR_API_KEY_HERE" \
+    -H "Content-Type: application/json" \
+    -d '{"logs":[{"project_id":"test_project","device_id":"test_device","form_data":{"screen":"home"},"log":{"level":"info","message":"deployment test"}}]}'
+
+  # Expected response:
+  # {"accepted":1,"trace_id":"...","queued_at":"..."}
+
+  # 4. Wait 5 seconds for worker to flush, then query the log back
+  sleep 5
+  curl "http://localhost:8000/logs?project_id=test_project"
+
+  # 5. Verify MongoDB has the document
+  sudo docker exec -it $(sudo docker-compose ps -q mongodb) \
+    mongosh -u admin -p YOUR_MONGO_PASSWORD logsdb \
+    --eval "db.logs.findOne()"
+
+  # 6. Verify indexes were created (should show 6 indexes)
+  sudo docker exec -it $(sudo docker-compose ps -q mongodb) \
+    mongosh -u admin -p YOUR_MONGO_PASSWORD logsdb \
+    --eval "db.logs.getIndexes()"
+
+  # 7. Verify worker consumers are unique
+  sudo docker exec -it $(sudo docker-compose ps -q redis) \
+    redis-cli XINFO CONSUMERS logs_stream workers
+
+  # 8. Confirm SMS service is still healthy
+  sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+  # 9. Check overall resource usage
+  sudo docker stats --no-stream
+
+
+STEP 7 — VERIFY EXTERNAL ACCESS (if using real domain)
+────────────────────────────────────────────────────────────────────────────────
+
+  From any external machine:
+
+  curl https://your-domain.com/health
+
+
+TROUBLESHOOTING
+────────────────────────────────────────────────────────────────────────────────
+
+  Container won't start?
+    sudo docker-compose logs fastapi
+    sudo docker-compose logs worker
+    sudo docker-compose logs mongodb
+    sudo docker-compose logs redis
+    sudo docker-compose logs nginx
+
+  MongoDB auth error?
+    Delete the volume and restart (WARNING: deletes all data):
+    sudo docker-compose down -v
+    sudo docker-compose up -d --build
+
+  Port already in use?
+    sudo ss -tlnp | grep -E "80|443|6379|27017"
+
+  Rebuild after code changes?
+    sudo docker-compose up -d --build
+
+  View live logs?
+    sudo docker-compose logs -f --tail=50
+
+
+USEFUL COMMANDS
+────────────────────────────────────────────────────────────────────────────────
+
+  Stop all services:       sudo docker-compose down
+  Restart all services:    sudo docker-compose restart
+  Restart single service:  sudo docker-compose restart fastapi
+  View queue depth:        sudo docker exec -it $(sudo docker-compose ps -q redis) redis-cli XLEN logs_stream
+  View DLQ depth:          sudo docker exec -it $(sudo docker-compose ps -q redis) redis-cli XLEN logs_dlq
+  MongoDB shell:           sudo docker exec -it $(sudo docker-compose ps -q mongodb) mongosh -u admin -p YOUR_MONGO_PASSWORD logsdb
+  Total log count:         # In mongosh: db.logs.countDocuments()
+
+
+CERTBOT AUTO-RENEWAL (if using Option B in Step 4)
+────────────────────────────────────────────────────────────────────────────────
+
+  echo "0 0 * * * certbot renew --quiet && sudo docker-compose -f /home/administrator/log-ingestion/docker-compose.yml restart nginx" | sudo crontab -
+
+================================================================================
