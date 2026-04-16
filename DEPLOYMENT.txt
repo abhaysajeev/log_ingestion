@@ -1,169 +1,337 @@
 ================================================================================
  LOG INGESTION PLATFORM — DEPLOYMENT GUIDE
- VPS: DOCKERCUSTOVIA (3.8 GB RAM, 2 CPU, 54 GB free disk)
- Existing: parking-sms-service (78 MB / 512 MB cap, no port conflicts)
+ Repo   : https://github.com/abhaysajeev/log_ingestion
+ VPS    : DOCKERCUSTOVIA (Ubuntu, sudo required for docker)
+ Stack  : FastAPI · Redis · MongoDB · Worker (x2) · Nginx · Backup
 ================================================================================
 
-PREREQUISITE: All docker commands on this VPS require sudo.
 
-
-STEP 1 — UPLOAD PROJECT TO VPS
+PRE-FLIGHT CHECKLIST (do all before starting)
 ────────────────────────────────────────────────────────────────────────────────
 
-  From your local machine:
-
-  scp -r "/home/silpc-068/Desktop/2026/Log Ingestion/log-ingestion" administrator@YOUR_VPS_IP:/home/administrator/log-ingestion
-
-
-STEP 2 — SSH INTO VPS
-────────────────────────────────────────────────────────────────────────────────
-
-  ssh administrator@YOUR_VPS_IP
-  cd /home/administrator/log-ingestion
+  □ VPS has Docker + Docker Compose installed
+  □ Ports 80 and 443 open in firewall / cloud security group
+  □ Domain A-record pointing to VPS IP (or use IP directly with self-signed SSL)
+  □ Git installed on VPS  (sudo apt install -y git)
+  □ Company SMTP credentials ready (host, port, username, password)
 
 
-STEP 3 — GENERATE SECRETS
-────────────────────────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════════════════════════
+ STEP 1 — GET THE CODE
+════════════════════════════════════════════════════════════════════════════════
 
-  Run these to generate strong random values:
+  SSH into the VPS:
 
-  openssl rand -hex 16    # → use as MONGO_PASSWORD
-  openssl rand -hex 32    # → use as API_KEY
-  openssl rand -hex 32    # → use as ADMIN_TOKEN
+    ssh administrator@YOUR_VPS_IP
 
-  Edit .env and paste the values:
+  Clone from GitHub:
 
-  nano .env
+    cd /home/administrator
+    git clone https://github.com/abhaysajeev/log_ingestion.git
+    cd log_ingestion
 
-  The file should look like:
 
-    MONGO_PASSWORD=<paste_mongo_password>
-    API_KEY=<paste_api_key>
+════════════════════════════════════════════════════════════════════════════════
+ STEP 2 — CREATE & POPULATE .env
+════════════════════════════════════════════════════════════════════════════════
+
+  Copy the template:
+
+    cp .env.example .env
+    nano .env
+
+  ── Generate strong secrets (run each, copy the output) ──────────────────────
+
+    openssl rand -hex 16    →  MONGO_PASSWORD
+    openssl rand -hex 32    →  API_KEY
+    openssl rand -hex 32    →  ADMIN_TOKEN
+    openssl rand -hex 32    →  DASHBOARD_TOKEN
+
+  ── Fill in the file ─────────────────────────────────────────────────────────
+
+    MONGO_PASSWORD=<generated>
+    API_KEY=<generated>
     RATE_LIMIT_PER_DEVICE=5000
     QUEUE_BACKPRESSURE_LIMIT=50000
-    ADMIN_TOKEN=<paste_admin_token>
+    ADMIN_TOKEN=<generated>
+    DASHBOARD_TOKEN=<generated>
 
-  Save: Ctrl+O, Enter, Ctrl+X
+    SMTP_HOST=smtp.office365.com        # your company SMTP server
+    SMTP_PORT=587                       # 587=STARTTLS, 465=SSL
+    SMTP_USER=alerts@yourcompany.com    # sender address
+    SMTP_PASSWORD=<smtp_password>
+    ALERT_EMAIL_TO=admin@yourcompany.com
+    ALERT_DLQ_THRESHOLD=10
 
+  Save: Ctrl+O  →  Enter  →  Ctrl+X
 
-STEP 4 — SSL CERTIFICATE
-────────────────────────────────────────────────────────────────────────────────
+  Protect the file:
 
-  Option A: Self-signed (for testing / internal use):
-
-  openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-    -keyout nginx/certs/privkey.pem \
-    -out nginx/certs/fullchain.pem \
-    -subj "/CN=your-domain.com"
-
-  Option B: Real certificate with Certbot (for production):
-
-  sudo apt install -y certbot
-  sudo certbot certonly --standalone -d your-domain.com
-  sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem nginx/certs/
-  sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem nginx/certs/
+    chmod 600 .env
 
 
-STEP 5 — LAUNCH
-────────────────────────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════════════════════════
+ STEP 3 — SSL CERTIFICATE
+════════════════════════════════════════════════════════════════════════════════
 
-  sudo docker-compose up -d --build
+  ── Option A: Real certificate with Let's Encrypt (RECOMMENDED) ──────────────
 
-  First run will take 3-5 minutes (downloads mongo:7, redis:7, python:3.12,
-  nginx:alpine images and builds FastAPI + Worker containers).
+    sudo apt install -y certbot
 
+    # Stop anything on port 80 temporarily if needed
+    sudo certbot certonly --standalone -d your-domain.com
 
-STEP 6 — VERIFY DEPLOYMENT
-────────────────────────────────────────────────────────────────────────────────
+    # Copy certs into the Nginx certs folder
+    sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem nginx/certs/
+    sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem  nginx/certs/
+    sudo chown $USER:$USER nginx/certs/*.pem
 
-  # 1. All containers should be "Up" and healthy
-  sudo docker-compose ps
+  ── Option B: Self-signed (internal / testing only) ──────────────────────────
 
-  # 2. Health check (should return {"status":"ok","queue_depth":0,...})
-  curl http://localhost:8000/health
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+      -keyout nginx/certs/privkey.pem \
+      -out    nginx/certs/fullchain.pem \
+      -subj "/CN=your-domain.com"
 
-  # 3. Send a test log batch
-  curl -X POST http://localhost:8000/ingest/batch \
-    -H "X-API-Key: YOUR_API_KEY_HERE" \
-    -H "Content-Type: application/json" \
-    -d '{"logs":[{"project_id":"test_project","device_id":"test_device","form_data":{"screen":"home"},"log":{"level":"info","message":"deployment test"}}]}'
+  ── Update nginx.conf with your domain ───────────────────────────────────────
 
-  # Expected response:
-  # {"accepted":1,"trace_id":"...","queued_at":"..."}
-
-  # 4. Wait 5 seconds for worker to flush, then query the log back
-  sleep 5
-  curl "http://localhost:8000/logs?project_id=test_project"
-
-  # 5. Verify MongoDB has the document
-  sudo docker exec -it $(sudo docker-compose ps -q mongodb) \
-    mongosh -u admin -p YOUR_MONGO_PASSWORD logsdb \
-    --eval "db.logs.findOne()"
-
-  # 6. Verify indexes were created (should show 6 indexes)
-  sudo docker exec -it $(sudo docker-compose ps -q mongodb) \
-    mongosh -u admin -p YOUR_MONGO_PASSWORD logsdb \
-    --eval "db.logs.getIndexes()"
-
-  # 7. Verify worker consumers are unique
-  sudo docker exec -it $(sudo docker-compose ps -q redis) \
-    redis-cli XINFO CONSUMERS logs_stream workers
-
-  # 8. Confirm SMS service is still healthy
-  sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-
-  # 9. Check overall resource usage
-  sudo docker stats --no-stream
+    nano nginx/nginx.conf
+    # Change:  server_name _;
+    # To:      server_name your-domain.com;
 
 
-STEP 7 — VERIFY EXTERNAL ACCESS (if using real domain)
-────────────────────────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════════════════════════
+ STEP 4 — LAUNCH
+════════════════════════════════════════════════════════════════════════════════
 
-  From any external machine:
+  Build images and start all services:
 
-  curl https://your-domain.com/health
+    sudo docker-compose up -d --build
+
+  First run takes 3–5 minutes (pulls mongo:7, redis:7, python:3.12, nginx:alpine
+  images and builds FastAPI + Worker containers).
+
+  Watch startup logs:
+
+    sudo docker-compose logs -f
 
 
-TROUBLESHOOTING
-────────────────────────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════════════════════════
+ STEP 5 — VERIFY DEPLOYMENT
+════════════════════════════════════════════════════════════════════════════════
 
-  Container won't start?
+  5a. All containers healthy
+  ─────────────────────────
+    sudo docker-compose ps
+
+    Expected output (all "Up" or "Up (healthy)"):
+      log-ingestion-nginx-1     Up
+      log-ingestion-fastapi-1   Up (healthy)
+      log-ingestion-worker-1    Up
+      log-ingestion-worker-2    Up
+      log-ingestion-redis-1     Up (healthy)
+      log-ingestion-mongodb-1   Up (healthy)
+      log-ingestion-backup-1    Up
+
+  5b. Health endpoint
+  ───────────────────
+    curl -k https://localhost/health
+    # Expected: {"status":"ok","queue_depth":0,"dlq_depth":0}
+
+  5c. Ingest a test log
+  ──────────────────────
+    curl -k -X POST https://localhost/ingest/batch \
+      -H "X-API-Key: YOUR_API_KEY_HERE" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "logs": [{
+          "project_id": "test_project",
+          "device_id":  "test_device_01",
+          "form_data":  {"screen": "home"},
+          "log":        {"level": "info", "message": "deployment verified"}
+        }]
+      }'
+    # Expected: {"accepted":1,"trace_id":"...","queued_at":"..."}
+
+  5d. Query the log back (after 5 seconds for worker flush)
+  ──────────────────────────────────────────────────────────
+    sleep 5
+    curl -k -H "X-Dashboard-Token: YOUR_DASHBOARD_TOKEN_HERE" \
+      "https://localhost/logs?project_id=test_project"
+    # Expected: {"logs":[{...}],"next_cursor":null}
+
+  5e. Open the dashboard in browser
+  ──────────────────────────────────
+    https://your-domain.com/dashboard
+    # Enter DASHBOARD_TOKEN when prompted
+    # Select project_id = test_project → click Search
+    # Should show the test log
+
+  5f. Verify MongoDB indexes
+  ───────────────────────────
+    MONGO_PW=$(grep MONGO_PASSWORD .env | cut -d= -f2)
+    sudo docker exec -it log-ingestion-mongodb-1 \
+      mongosh -u admin -p "$MONGO_PW" logsdb \
+      --eval "db.logs.getIndexes().forEach(i => print(i.name))"
+
+    # Expected index names:
+    #   _id_
+    #   project_time
+    #   device_time
+    #   project_device_time
+    #   trace_id
+    #   ttl_30_days        ← auto-deletes logs after 30 days
+
+  5g. Verify worker consumers active
+  ────────────────────────────────────
+    sudo docker exec log-ingestion-redis-1 \
+      redis-cli XINFO CONSUMERS logs_stream workers
+    # Should show 2 consumers (one per worker replica)
+
+  5h. Existing SMS service still running
+  ───────────────────────────────────────
+    sudo docker ps --format "table {{.Names}}\t{{.Status}}"
+    # parking-sms-service should show "Up X weeks (healthy)"
+
+
+════════════════════════════════════════════════════════════════════════════════
+ STEP 6 — CONFIGURE ALERT EMAILS
+════════════════════════════════════════════════════════════════════════════════
+
+  Once SMTP is set in .env, alerts fire automatically when the Dead‑Letter Queue
+  depth hits ALERT_DLQ_THRESHOLD (default 10).
+
+  To test the SMTP connection manually:
+
+    python3 -c "
+    import smtplib, os
+    host = os.getenv('SMTP_HOST'); port = int(os.getenv('SMTP_PORT','587'))
+    user = os.getenv('SMTP_USER'); pw   = os.getenv('SMTP_PASSWORD')
+    with smtplib.SMTP(host, port) as s:
+        s.starttls(); s.login(user, pw); print('SMTP OK')
+    " # run after loading env vars
+
+
+════════════════════════════════════════════════════════════════════════════════
+ STEP 7 — SET UP SSL AUTO-RENEWAL (Let's Encrypt only)
+════════════════════════════════════════════════════════════════════════════════
+
+  Add a crontab entry to renew certs and reload nginx:
+
+    sudo crontab -e
+
+  Add this line (runs at 2 AM daily):
+
+    0 2 * * * certbot renew --quiet && \
+      cp /etc/letsencrypt/live/your-domain.com/fullchain.pem /home/administrator/log_ingestion/nginx/certs/ && \
+      cp /etc/letsencrypt/live/your-domain.com/privkey.pem  /home/administrator/log_ingestion/nginx/certs/ && \
+      docker exec log-ingestion-nginx-1 nginx -s reload
+
+
+════════════════════════════════════════════════════════════════════════════════
+ STEP 8 — DAILY OPERATIONS
+════════════════════════════════════════════════════════════════════════════════
+
+  View resource usage:
+    sudo docker stats --no-stream
+
+  View live logs (all services):
+    sudo docker-compose logs -f
+
+  View logs for one service:
+    sudo docker-compose logs -f fastapi
+    sudo docker-compose logs -f worker
+
+  Check queue / DLQ depth:
+    sudo docker exec log-ingestion-redis-1 redis-cli XLEN logs_stream
+    sudo docker exec log-ingestion-redis-1 redis-cli XLEN logs_dlq
+
+  Total records in MongoDB:
+    MONGO_PW=$(grep MONGO_PASSWORD .env | cut -d= -f2)
+    sudo docker exec log-ingestion-mongodb-1 \
+      mongosh -u admin -p "$MONGO_PW" logsdb \
+      --eval "db.logs.countDocuments()"
+
+  MongoDB shell:
+    MONGO_PW=$(grep MONGO_PASSWORD .env | cut -d= -f2)
+    sudo docker exec -it log-ingestion-mongodb-1 \
+      mongosh -u admin -p "$MONGO_PW" logsdb
+
+  Stop all services:
+    sudo docker-compose down
+
+  Restart single service:
+    sudo docker-compose restart fastapi
+
+  Pull latest code and redeploy:
+    git pull origin main
+    sudo docker-compose up -d --build
+
+
+════════════════════════════════════════════════════════════════════════════════
+ TROUBLESHOOTING
+════════════════════════════════════════════════════════════════════════════════
+
+  PROBLEM: Container stuck in "Starting" / not healthy
+  ──────────────────────────────────────────────────────
     sudo docker-compose logs fastapi
-    sudo docker-compose logs worker
     sudo docker-compose logs mongodb
-    sudo docker-compose logs redis
-    sudo docker-compose logs nginx
+    # Look for: auth error, port conflict, disk full
 
-  MongoDB auth error?
-    Delete the volume and restart (WARNING: deletes all data):
-    sudo docker-compose down -v
+  PROBLEM: MongoDB auth error on startup
+  ───────────────────────────────────────
+    # Only do this if the DB is empty / fresh deploy
+    sudo docker-compose down -v           # ← deletes data volumes!
     sudo docker-compose up -d --build
 
-  Port already in use?
-    sudo ss -tlnp | grep -E "80|443|6379|27017"
+  PROBLEM: 502 Bad Gateway from Nginx
+  ─────────────────────────────────────
+    # FastAPI not healthy yet — wait 30s after start
+    sudo docker-compose ps               # check fastapi health
+    sudo docker exec log-ingestion-nginx-1 nginx -s reload
 
-  Rebuild after code changes?
-    sudo docker-compose up -d --build
+  PROBLEM: Port 80/443 already in use
+  ─────────────────────────────────────
+    sudo ss -tlnp | grep -E ":80 |:443 "
+    # Kill or move the conflicting process
 
-  View live logs?
-    sudo docker-compose logs -f --tail=50
+  PROBLEM: Logs not appearing in dashboard after ingest
+  ───────────────────────────────────────────────────────
+    # Check worker is consuming from Redis
+    sudo docker exec log-ingestion-redis-1 redis-cli XLEN logs_stream
+    sudo docker-compose logs worker
+    # If DLQ is non-zero, check logs_dlq for error details
+    sudo docker exec log-ingestion-redis-1 \
+      redis-cli XRANGE logs_dlq - + COUNT 5
+
+  PROBLEM: Dashboard shows 401 / locked out
+  ───────────────────────────────────────────
+    # Check DASHBOARD_TOKEN in .env is correctly set
+    # Open dashboard in fresh tab (sessionStorage cleared)
+    grep DASHBOARD_TOKEN .env
+
+  PROBLEM: Backup not running
+  ─────────────────────────────
+    sudo docker-compose logs backup
+    # Check MONGODB_URL env var and that mongodump is available in image
 
 
-USEFUL COMMANDS
-────────────────────────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════════════════════════
+ QUICK REFERENCE — ALL PORTS & ENDPOINTS
+════════════════════════════════════════════════════════════════════════════════
 
-  Stop all services:       sudo docker-compose down
-  Restart all services:    sudo docker-compose restart
-  Restart single service:  sudo docker-compose restart fastapi
-  View queue depth:        sudo docker exec -it $(sudo docker-compose ps -q redis) redis-cli XLEN logs_stream
-  View DLQ depth:          sudo docker exec -it $(sudo docker-compose ps -q redis) redis-cli XLEN logs_dlq
-  MongoDB shell:           sudo docker exec -it $(sudo docker-compose ps -q mongodb) mongosh -u admin -p YOUR_MONGO_PASSWORD logsdb
-  Total log count:         # In mongosh: db.logs.countDocuments()
+  External (via Nginx HTTPS):
+    POST  https://domain/ingest/batch         Device log ingestion  (X-API-Key)
+    GET   https://domain/health               Health check           (public)
+    GET   https://domain/dashboard            Log dashboard          (login prompt)
+    GET   https://domain/logs                 Query logs             (X-Dashboard-Token)
+    GET   https://domain/logs/distinct        Dropdown autocomplete  (X-Dashboard-Token)
+    GET   https://domain/logs/export          Bulk JSON export       (X-Dashboard-Token)
+    GET   https://domain/admin/dlq            DLQ viewer             (X-Admin-Token)
 
-
-CERTBOT AUTO-RENEWAL (if using Option B in Step 4)
-────────────────────────────────────────────────────────────────────────────────
-
-  echo "0 0 * * * certbot renew --quiet && sudo docker-compose -f /home/administrator/log-ingestion/docker-compose.yml restart nginx" | sudo crontab -
+  Internal (container network only):
+    FastAPI   : http://fastapi:8000
+    Redis     : redis:6379
+    MongoDB   : mongodb:27017
 
 ================================================================================
