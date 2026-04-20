@@ -288,7 +288,7 @@
     <p>Enter your token to continue.</p>
     <input class="login-input" id="loginToken" type="password" placeholder="Paste your dashboard token…" autocomplete="off">
     <div class="login-error" id="loginError">Invalid token — please try again.</div>
-    <button class="btn btn-primary" style="width:100%;justify-content:center;height:40px" onclick="submitLogin()">
+    <button class="btn btn-primary" style="width:100%;justify-content:center;height:40px" id="loginBtn">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
       Continue
     </button>
@@ -476,6 +476,7 @@ async function submitLogin() {
 if (!getToken()) { showLogin(false); }
 else { document.getElementById('loginOverlay').classList.remove('show'); }
 document.getElementById('loginToken').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
+document.getElementById('loginBtn').addEventListener('click', submitLogin);
 
 // ── Health ──────────────────────────────────────────────────────────────────
 async function checkHealth() {
