@@ -3,742 +3,415 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Log Ingestion Dashboard</title>
+  <title>Log Viewer</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
-      --bg:          #f5f7fa;
-      --surface:     #ffffff;
-      --surface-2:   #f0f2f5;
-      --border:      #e2e6ed;
-      --border-focus:#4f46e5;
-      --text-1:      #111827;
-      --text-2:      #4b5563;
-      --text-3:      #9ca3af;
-      --accent:      #4f46e5;
-      --accent-bg:   #ede9ff;
-      --accent-hover:#4338ca;
-      --success:     #16a34a;
-      --warning:     #d97706;
-      --error:       #dc2626;
-      --shadow-sm:   0 1px 3px rgba(0,0,0,.07), 0 1px 2px rgba(0,0,0,.04);
-      --shadow-md:   0 4px 16px rgba(0,0,0,.10);
-      --shadow-lg:   0 12px 40px rgba(0,0,0,.14);
-      --radius:      10px;
-      --radius-sm:   7px;
-      --tr:          0.18s ease;
+      --bg:         #f4f6f9;
+      --surface:    #ffffff;
+      --surface-2:  #f8f9fb;
+      --border:     #e4e7ed;
+      --border-2:   #d0d5de;
+      --text-1:     #111827;
+      --text-2:     #4b5563;
+      --text-3:     #9ca3af;
+      --accent:     #2563eb;
+      --accent-bg:  #eff6ff;
+      --accent-h:   #1d4ed8;
+      --success:    #16a34a;
+      --warning:    #b45309;
+      --error:      #dc2626;
+      --info:       #0369a1;
+      --debug:      #7c3aed;
+      --shadow-sm:  0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+      --shadow-md:  0 4px 16px rgba(0,0,0,.09);
+      --shadow-lg:  0 12px 40px rgba(0,0,0,.13);
+      --r:          8px;
+      --r-sm:       6px;
+      --tr:         0.15s ease;
     }
+    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text-1); min-height: 100vh; line-height: 1.5; font-size: 13px; }
 
-    body {
-      font-family: 'Inter', sans-serif;
-      background: var(--bg);
-      color: var(--text-1);
-      min-height: 100vh;
-      line-height: 1.5;
-    }
-
-    /* ── Top Bar ─────────────────────── */
+    /* ═══ TOPBAR ═══════════════════════════════════════════════ */
     .topbar {
       background: var(--surface);
       border-bottom: 1px solid var(--border);
-      padding: 0 32px;
-      height: 56px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      position: sticky;
-      top: 0;
-      z-index: 200;
+      height: 52px;
+      padding: 0 24px;
+      display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; z-index: 200;
       box-shadow: var(--shadow-sm);
     }
-
-    .topbar-brand {
-      display: flex;
-      align-items: center;
-      gap: 10px;
+    .topbar-left { display: flex; align-items: center; gap: 14px; }
+    .brand { display: flex; align-items: center; gap: 9px; }
+    .brand-logo {
+      width: 30px; height: 30px; background: var(--accent); border-radius: 7px;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
     }
-
-    .brand-icon {
-      width: 32px; height: 32px;
-      background: var(--accent);
-      border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      color: white; font-size: 16px;
+    .brand-logo svg { color: #fff; }
+    .brand-name { font-size: 15px; font-weight: 700; color: var(--text-1); letter-spacing: -.4px; }
+    .brand-name span { color: var(--accent); }
+    .topbar-sep { width: 1px; height: 22px; background: var(--border); }
+    .entry-pill {
+      display: flex; align-items: center; gap: 6px;
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 100px; padding: 4px 12px; font-size: 12px;
+      color: var(--text-2); cursor: pointer; transition: border-color var(--tr);
     }
-
-    .topbar h1 {
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--text-1);
-      letter-spacing: -0.3px;
+    .entry-pill:hover { border-color: var(--border-2); }
+    .entry-pill strong { color: var(--text-1); font-weight: 600; }
+    .entry-pill svg { color: var(--text-3); }
+    .topbar-right { display: flex; align-items: center; gap: 8px; }
+    .search-wrap {
+      position: relative; display: flex; align-items: center;
     }
-
-    .topbar-status {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--text-2);
-      background: var(--surface-2);
-      padding: 5px 12px;
-      border-radius: 100px;
-      border: 1px solid var(--border);
+    .search-wrap svg { position: absolute; left: 10px; color: var(--text-3); pointer-events: none; }
+    .search-input {
+      width: 220px; height: 34px; padding: 0 36px 0 34px;
+      border: 1.5px solid var(--border); border-radius: var(--r-sm);
+      background: var(--surface-2); font-size: 13px; font-family: inherit;
+      color: var(--text-1); outline: none; transition: all var(--tr);
     }
-
-    .status-dot {
-      width: 7px; height: 7px;
-      border-radius: 50%;
-      background: var(--success);
-      flex-shrink: 0;
-      animation: blink 2.5s ease-in-out infinite;
+    .search-input:focus { border-color: var(--accent); background: #fff; box-shadow: 0 0 0 3px rgba(37,99,235,.1); width: 260px; }
+    .search-input::placeholder { color: var(--text-3); }
+    .icon-btn {
+      width: 34px; height: 34px; border: 1.5px solid var(--border);
+      background: var(--surface); border-radius: var(--r-sm);
+      color: var(--text-2); cursor: pointer; display: flex; align-items: center;
+      justify-content: center; transition: all var(--tr);
     }
+    .icon-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+    .status-indicator { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); animation: pulse 2.5s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
 
-    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.35} }
-
-    /* ── Filter Bar ──────────────────── */
-    .filter-bar {
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      padding: 16px 32px;
-      display: flex;
-      gap: 12px;
-      align-items: flex-end;
-      flex-wrap: wrap;
+    /* ═══ FILTER STRIP ═════════════════════════════════════════ */
+    .filter-strip {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
     }
-
-    .filter-group {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-      position: relative;
-    }
-
-    .filter-group label {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text-2);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    /* ── Combobox ────────────────────── */
-    .combo-wrap {
-      position: relative;
-      width: 230px;
-    }
-
+    .filter-label { font-size: 11px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .5px; white-space: nowrap; }
+    .combo-wrap { position: relative; }
     .combo-input {
-      width: 100%;
-      height: 38px;
-      padding: 0 32px 0 12px;
-      background: var(--surface);
-      border: 1.5px solid var(--border);
-      border-radius: var(--radius-sm);
-      font-size: 14px;
-      font-family: 'Inter', sans-serif;
-      color: var(--text-1);
-      transition: border-color var(--tr), box-shadow var(--tr);
-      outline: none;
+      height: 34px; padding: 0 28px 0 10px;
+      border: 1.5px solid var(--border); border-radius: var(--r-sm);
+      background: var(--surface); font-size: 13px; font-family: inherit;
+      color: var(--text-1); outline: none; transition: all var(--tr); width: 190px;
     }
-
-    .combo-input:focus {
-      border-color: var(--border-focus);
-      box-shadow: 0 0 0 3px rgba(79,70,229,.12);
-    }
-
+    .combo-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
     .combo-input::placeholder { color: var(--text-3); }
-
-    .combo-chevron {
-      position: absolute;
-      right: 10px;
-      top: 50%;
-      transform: translateY(-50%);
-      pointer-events: none;
-      color: var(--text-3);
-      transition: transform var(--tr);
-    }
-
+    .combo-chevron { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--text-3); }
     .combo-wrap.open .combo-chevron { transform: translateY(-50%) rotate(180deg); }
-
-    /* Dropdown list */
     .combo-list {
-      position: absolute;
-      top: calc(100% + 4px);
-      left: 0;
-      width: 100%;
-      background: var(--surface);
-      border: 1.5px solid var(--border);
-      border-radius: var(--radius-sm);
-      box-shadow: var(--shadow-md);
-      z-index: 300;
-      overflow-y: auto;
-      max-height: 240px; /* ~15 items */
-      display: none;
+      position: absolute; top: calc(100% + 4px); left: 0; width: 100%;
+      background: var(--surface); border: 1.5px solid var(--border); border-radius: var(--r-sm);
+      box-shadow: var(--shadow-md); z-index: 300; max-height: 220px; overflow-y: auto; display: none;
     }
-
     .combo-wrap.open .combo-list { display: block; }
-
-    .combo-item {
-      padding: 9px 12px;
-      font-size: 13px;
-      color: var(--text-1);
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      transition: background var(--tr);
-      border-bottom: 1px solid var(--border);
-    }
-
+    .combo-item { padding: 8px 12px; font-size: 13px; color: var(--text-1); cursor: pointer; transition: background var(--tr); border-bottom: 1px solid var(--border); }
     .combo-item:last-child { border-bottom: none; }
     .combo-item:hover, .combo-item.active { background: var(--accent-bg); color: var(--accent); }
-
-    .combo-item em {
-      font-style: normal;
-      background: var(--accent-bg);
-      color: var(--accent);
-      border-radius: 3px;
-      padding: 0 2px;
+    .combo-item em { font-style: normal; background: var(--accent-bg); color: var(--accent); border-radius: 3px; padding: 0 2px; }
+    .combo-empty, .combo-loading { padding: 10px 12px; font-size: 13px; color: var(--text-3); text-align: center; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .date-input {
+      height: 34px; padding: 0 10px; border: 1.5px solid var(--border); border-radius: var(--r-sm);
+      background: var(--surface); font-size: 12.5px; font-family: inherit; color: var(--text-1);
+      outline: none; transition: all var(--tr);
     }
-
-    .combo-empty {
-      padding: 12px;
-      font-size: 13px;
-      color: var(--text-3);
-      text-align: center;
-    }
-
-    .combo-loading {
-      padding: 12px;
-      font-size: 13px;
-      color: var(--text-3);
-      text-align: center;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-    }
-
-    /* ── Buttons ─────────────────────── */
+    .date-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+    .filter-sep { width: 1px; height: 22px; background: var(--border); margin: 0 2px; }
     .btn {
-      height: 38px;
-      padding: 0 18px;
-      border: none;
-      border-radius: var(--radius-sm);
-      font-size: 14px;
-      font-family: 'Inter', sans-serif;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all var(--tr);
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      white-space: nowrap;
+      height: 34px; padding: 0 16px; border: none; border-radius: var(--r-sm);
+      font-size: 13px; font-family: inherit; font-weight: 500; cursor: pointer;
+      transition: all var(--tr); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
     }
-
-    .btn-primary {
-      background: var(--accent);
-      color: white;
-      box-shadow: 0 1px 4px rgba(79,70,229,.3);
-    }
-
-    .btn-primary:hover { background: var(--accent-hover); box-shadow: 0 2px 8px rgba(79,70,229,.35); }
-
-    .btn-secondary {
-      background: var(--surface);
-      color: var(--text-2);
-      border: 1.5px solid var(--border);
-    }
-
-    .btn-secondary:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
-
+    .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 1px 3px rgba(37,99,235,.3); }
+    .btn-primary:hover { background: var(--accent-h); box-shadow: 0 2px 8px rgba(37,99,235,.35); }
+    .btn-ghost { background: transparent; color: var(--text-2); border: 1.5px solid var(--border); }
+    .btn-ghost:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
     .btn:disabled { opacity: .5; cursor: not-allowed; }
 
-    .filter-actions { display: flex; gap: 8px; }
-
-    /* ── Info Bar ────────────────────── */
-    .info-bar {
-      padding: 10px 32px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      border-bottom: 1px solid var(--border);
-      background: var(--surface);
+    /* ═══ TABLE HEADER BAR ═════════════════════════════════════ */
+    .table-header-bar {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 8px 24px; display: flex; align-items: center; justify-content: space-between;
     }
-
-    .info-bar .count {
-      font-size: 13px;
-      color: var(--text-2);
+    .result-info { font-size: 12.5px; color: var(--text-2); }
+    .result-info strong { color: var(--text-1); font-weight: 600; }
+    .sort-btn {
+      display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-2);
+      background: none; border: none; cursor: pointer; font-family: inherit; padding: 0;
     }
+    .sort-btn:hover { color: var(--accent); }
 
-    .info-bar .count strong { color: var(--text-1); }
-
-    /* ── Table ───────────────────────── */
-    .table-wrap {
-      padding: 20px 32px;
-      overflow-x: auto;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: separate;
-      border-spacing: 0;
-      background: var(--surface);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow-sm);
-      overflow: hidden;
-      border: 1px solid var(--border);
-    }
-
+    /* ═══ TABLE ════════════════════════════════════════════════ */
+    .table-wrap { padding: 16px 24px; overflow-x: auto; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--surface); border-radius: var(--r); box-shadow: var(--shadow-sm); overflow: hidden; border: 1px solid var(--border); }
     thead th {
-      background: var(--surface-2);
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-2);
-      padding: 11px 16px;
-      text-align: left;
-      border-bottom: 1px solid var(--border);
-    }
-
-    tbody tr {
-      cursor: pointer;
-      transition: background var(--tr);
-    }
-
-    tbody tr:hover { background: #f5f4ff; }
-
-    tbody td {
-      padding: 13px 16px;
-      font-size: 13px;
-      color: var(--text-2);
-      border-bottom: 1px solid var(--border);
-      max-width: 220px;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      background: var(--surface-2); font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .5px; color: var(--text-3);
+      padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border);
       white-space: nowrap;
-      vertical-align: middle;
     }
-
+    thead th:first-child { padding-left: 16px; }
+    tbody tr { cursor: pointer; transition: background var(--tr); }
+    tbody tr:hover { background: var(--accent-bg); }
+    tbody td { padding: 11px 14px; font-size: 13px; color: var(--text-2); border-bottom: 1px solid var(--border); vertical-align: middle; }
     tbody tr:last-child td { border-bottom: none; }
-    tbody td:first-child { color: var(--text-1); font-weight: 500; }
+    tbody td:first-child { padding-left: 16px; }
+    .td-time { white-space: nowrap; font-variant-numeric: tabular-nums; font-size: 12.5px; }
+    .td-msg { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
+    .td-trace { font-family: 'SF Mono','Fira Code',monospace; font-size: 11px; color: var(--text-3); }
+    .td-arrow { color: var(--text-3); text-align: right !important; width: 28px; }
+    .td-arrow svg { vertical-align: middle; }
 
-    .pill {
-      display: inline-block;
-      padding: 2px 10px;
-      border-radius: 100px;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.2px;
+    /* ═══ LEVEL BADGES ═════════════════════════════════════════ */
+    .lvl {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+      letter-spacing: .15px; white-space: nowrap;
     }
+    .lvl-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+    .lvl-info    { background: #e0f2fe; color: var(--info); }    .lvl-info .lvl-dot    { background: var(--info); }
+    .lvl-debug   { background: #ede9fe; color: var(--debug); }   .lvl-debug .lvl-dot   { background: var(--debug); }
+    .lvl-warn    { background: #fef3c7; color: var(--warning); } .lvl-warn .lvl-dot    { background: var(--warning); }
+    .lvl-error   { background: #fee2e2; color: var(--error); }   .lvl-error .lvl-dot   { background: var(--error); }
+    .lvl-success { background: #dcfce7; color: var(--success); } .lvl-success .lvl-dot { background: var(--success); }
 
-    .pill-project { background: #ede9ff; color: #5b21b6; }
+    .pill { display: inline-block; padding: 2px 9px; border-radius: 100px; font-size: 11px; font-weight: 500; }
+    .pill-project { background: #ede9fe; color: #5b21b6; }
     .pill-device  { background: #dcfce7; color: #15803d; }
 
-    .trace-mono {
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 11px;
-      color: var(--text-3);
-    }
-
-    /* ── Arrow column ────────────────── */
-    .row-arrow {
-      color: var(--text-3);
-      font-size: 14px;
-      text-align: right !important;
-    }
-
-    /* ── Empty / Loading ─────────────── */
-    .empty-state {
-      display: none;
-      flex-direction: column;
-      align-items: center;
-      padding: 64px 32px;
-      color: var(--text-3);
-    }
-
+    /* ═══ EMPTY / LOADING ══════════════════════════════════════ */
+    .empty-state { display: none; flex-direction: column; align-items: center; padding: 72px 32px; color: var(--text-3); gap: 10px; }
     .empty-state.show { display: flex; }
-    .empty-state svg { margin-bottom: 14px; }
-    .empty-state p { font-size: 14px; color: var(--text-2); }
-    .empty-state span { font-size: 13px; margin-top: 4px; }
-
-    .loading-row td {
-      text-align: center;
-      padding: 32px;
-    }
-
-    /* ── Pagination ──────────────────── */
-    .pagination {
-      display: none;
-      justify-content: center;
-      padding: 0 32px 24px;
-    }
-
-    .pagination.show { display: flex; }
-
-    /* ── Modal ───────────────────────── */
-    .overlay {
-      position: fixed; inset: 0;
-      background: rgba(17,24,39,.35);
-      backdrop-filter: blur(4px);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      z-index: 400;
-    }
-
-    .overlay.show { display: flex; }
-
-    @keyframes pop {
-      from { opacity:0; transform: scale(.96) translateY(10px); }
-      to   { opacity:1; transform: scale(1)   translateY(0); }
-    }
-
-    .modal {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      width: 92%;
-      max-width: 700px;
-      max-height: 88vh;
-      display: flex;
-      flex-direction: column;
-      box-shadow: var(--shadow-lg);
-      animation: pop .2s ease;
-    }
-
-    .modal-head {
-      padding: 18px 22px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .modal-head h2 { font-size: 15px; font-weight: 600; }
-
-    .modal-head-actions { display: flex; gap: 6px; }
-
-    .icon-btn {
-      width: 34px; height: 34px;
-      border: 1.5px solid var(--border);
-      background: transparent;
-      border-radius: var(--radius-sm);
-      color: var(--text-2);
-      cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      transition: all var(--tr);
-      font-family: inherit;
-    }
-
-    .icon-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
-
-    .modal-body {
-      padding: 22px;
-      overflow-y: auto;
-      flex: 1;
-    }
-
-    .section-label {
-      font-size: 10.5px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: .6px;
-      color: var(--text-3);
-      margin-bottom: 8px;
-    }
-
-    .meta-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
-      gap: 10px;
-      margin-bottom: 20px;
-    }
-
-    .meta-card {
-      background: var(--surface-2);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 11px 13px;
-    }
-
-    .meta-card .lbl {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: .5px;
-      color: var(--text-3);
-      margin-bottom: 3px;
-    }
-
-    .meta-card .val {
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text-1);
-      word-break: break-all;
-    }
-
-    .json-section { margin-bottom: 20px; }
-    .json-section:last-child { margin-bottom: 0; }
-
-    .json-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 6px;
-    }
-
-    .json-block {
-      background: #f8f9fb;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 14px 16px;
-      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-      font-size: 12.5px;
-      line-height: 1.75;
-      color: var(--text-2);
-      overflow-x: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    /* JSON syntax colors — light mode */
-    .jk { color: #6d28d9; }   /* key */
-    .js { color: #059669; }   /* string */
-    .jn { color: #d97706; }   /* number */
-    .jb { color: #db2777; }   /* bool */
-    .jz { color: #94a3b8; font-style: italic; }  /* null */
-
-    /* ── Toast ───────────────────────── */
-    .toast {
-      position: fixed;
-      bottom: 24px; right: 24px;
-      background: var(--text-1);
-      color: white;
-      padding: 11px 18px;
-      border-radius: var(--radius-sm);
-      font-size: 13px;
-      box-shadow: var(--shadow-md);
-      opacity: 0;
-      transform: translateY(12px);
-      transition: all .25s ease;
-      z-index: 999;
-      pointer-events: none;
-    }
-
-    .toast.show { opacity: 1; transform: translateY(0); }
-
-    /* ── Spinner ─────────────────────── */
-    .spin {
-      width: 16px; height: 16px;
-      border: 2px solid var(--border);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: rotate .6s linear infinite;
-      flex-shrink: 0;
-    }
+    .empty-state p { font-size: 14px; color: var(--text-2); font-weight: 500; }
+    .empty-state span { font-size: 12.5px; color: var(--text-3); }
+    .loading-row td { text-align: center; padding: 32px; }
+    .spin { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: rotate .6s linear infinite; flex-shrink: 0; display: inline-block; }
     @keyframes rotate { to { transform: rotate(360deg); } }
 
-    @media (max-width: 700px) {
-      .topbar, .filter-bar, .info-bar, .table-wrap, .pagination { padding-left: 16px; padding-right: 16px; }
-      .combo-wrap { width: 100%; }
-      .filter-bar { flex-direction: column; align-items: stretch; }
-      .filter-actions .btn { flex: 1; justify-content: center; }
+    /* ═══ PAGINATION ═══════════════════════════════════════════ */
+    .pagination {
+      display: none; align-items: center; justify-content: center; gap: 6px;
+      padding: 10px 24px 22px; flex-wrap: wrap;
     }
+    .pagination.show { display: flex; }
+    .pg-btn {
+      min-width: 34px; height: 34px; padding: 0 8px;
+      border: 1.5px solid var(--border); border-radius: var(--r-sm);
+      background: var(--surface); color: var(--text-2); font-size: 12.5px;
+      font-family: inherit; font-weight: 500; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+      transition: all var(--tr); white-space: nowrap;
+    }
+    .pg-btn:hover:not(.active):not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+    .pg-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+    .pg-btn:disabled { opacity: .35; cursor: not-allowed; }
+    .pg-ellipsis { font-size: 12px; color: var(--text-3); padding: 0 2px; user-select: none; letter-spacing: 1px; }
+    .pg-info { font-size: 12px; color: var(--text-3); margin-left: 12px; display: flex; align-items: center; gap: 6px; }
+    .pg-select {
+      height: 30px; padding: 0 8px; border: 1.5px solid var(--border); border-radius: var(--r-sm);
+      background: var(--surface); font-size: 12px; font-family: inherit;
+      color: var(--text-1); outline: none; cursor: pointer;
+    }
+    .pg-select:focus { border-color: var(--accent); }
 
-    /* ── Login Overlay ───────────────────── */
-    .login-overlay {
-      position: fixed; inset: 0;
-      background: rgba(17,24,39,.55);
-      backdrop-filter: blur(6px);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      z-index: 9000;
+    /* ═══ STATUS BAR ═══════════════════════════════════════════ */
+    .statusbar {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: var(--surface); border-top: 1px solid var(--border);
+      height: 30px; padding: 0 24px; display: flex; align-items: center;
+      justify-content: space-between; font-size: 11.5px; color: var(--text-3);
+      z-index: 100;
     }
+    .statusbar-left, .statusbar-right { display: flex; align-items: center; gap: 16px; }
+    .statusbar-item { display: flex; align-items: center; gap: 5px; }
+    .statusbar-item svg { flex-shrink: 0; }
+    body { padding-bottom: 30px; }
+
+    /* ═══ OVERLAY / MODAL ══════════════════════════════════════ */
+    .overlay { position: fixed; inset: 0; background: rgba(17,24,39,.3); backdrop-filter: blur(4px); display: none; align-items: center; justify-content: center; z-index: 400; }
+    .overlay.show { display: flex; }
+    @keyframes pop { from{opacity:0;transform:scale(.96) translateY(8px)} to{opacity:1;transform:scale(1) translateY(0)} }
+    .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; width: 92%; max-width: 680px; max-height: 87vh; display: flex; flex-direction: column; box-shadow: var(--shadow-lg); animation: pop .18s ease; }
+    .modal-head { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .modal-head h2 { font-size: 14px; font-weight: 600; color: var(--text-1); display: flex; align-items: center; gap: 8px; }
+    .modal-head-actions { display: flex; gap: 6px; }
+    .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
+    .section-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--text-3); margin-bottom: 8px; }
+    .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 18px; }
+    .meta-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 10px 12px; }
+    .meta-card .lbl { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--text-3); margin-bottom: 3px; }
+    .meta-card .val { font-size: 12.5px; font-weight: 500; color: var(--text-1); word-break: break-all; }
+    .json-section { margin-bottom: 18px; }
+    .json-section:last-child { margin-bottom: 0; }
+    .json-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .json-block { background: #f8f9fb; border: 1px solid var(--border); border-radius: var(--r-sm); padding: 13px 15px; font-family: 'SF Mono','Fira Code','Consolas',monospace; font-size: 12px; line-height: 1.7; color: var(--text-2); overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+    .jk{color:#6d28d9} .js{color:#059669} .jn{color:#d97706} .jb{color:#db2777} .jz{color:#94a3b8;font-style:italic}
+
+    /* ═══ TOAST ════════════════════════════════════════════════ */
+    .toast { position: fixed; bottom: 48px; right: 20px; background: var(--text-1); color: #fff; padding: 10px 16px; border-radius: var(--r-sm); font-size: 12.5px; box-shadow: var(--shadow-md); opacity: 0; transform: translateY(10px); transition: all .22s ease; z-index: 999; pointer-events: none; display: flex; align-items: center; gap: 8px; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    /* ═══ LOGIN ════════════════════════════════════════════════ */
+    .login-overlay { position: fixed; inset: 0; background: rgba(17,24,39,.5); backdrop-filter: blur(7px); display: none; align-items: center; justify-content: center; z-index: 9000; }
     .login-overlay.show { display: flex; }
-    .login-box {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 36px 36px 28px;
-      width: 360px;
-      box-shadow: var(--shadow-lg);
-      animation: pop .2s ease;
-    }
-    .login-box h2 {
-      font-size: 18px;
-      font-weight: 700;
-      color: var(--text-1);
-      margin-bottom: 6px;
-    }
-    .login-box p {
-      font-size: 13px;
-      color: var(--text-2);
-      margin-bottom: 20px;
-    }
-    .login-input {
-      width: 100%;
-      height: 42px;
-      padding: 0 14px;
-      background: var(--surface-2);
-      border: 1.5px solid var(--border);
-      border-radius: var(--radius-sm);
-      font-size: 14px;
-      font-family: 'Inter', sans-serif;
-      color: var(--text-1);
-      margin-bottom: 12px;
-      outline: none;
-      transition: border-color var(--tr), box-shadow var(--tr);
-    }
-    .login-input:focus {
-      border-color: var(--border-focus);
-      box-shadow: 0 0 0 3px rgba(79,70,229,.12);
-    }
-    .login-error {
-      font-size: 12px;
-      color: var(--error);
-      margin-bottom: 8px;
-      display: none;
-    }
+    .login-box { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 32px 32px 26px; width: 360px; box-shadow: var(--shadow-lg); animation: pop .2s ease; }
+    .login-logo { width: 44px; height: 44px; background: var(--accent); border-radius: 10px; display: flex; align-items: center; justify-content: center; margin-bottom: 18px; }
+    .login-logo svg { color: #fff; }
+    .login-box h2 { font-size: 17px; font-weight: 700; margin-bottom: 5px; }
+    .login-box p { font-size: 13px; color: var(--text-2); margin-bottom: 20px; }
+    .login-input { width: 100%; height: 40px; padding: 0 13px; background: var(--surface-2); border: 1.5px solid var(--border); border-radius: var(--r-sm); font-size: 13.5px; font-family: inherit; color: var(--text-1); margin-bottom: 12px; outline: none; transition: all var(--tr); }
+    .login-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.1); background: #fff; }
+    .login-error { font-size: 12px; color: var(--error); margin-bottom: 8px; display: none; padding: 8px 10px; background: #fee2e2; border-radius: var(--r-sm); }
     .login-error.show { display: block; }
 
-    /* ── Date inputs ─────────────────────── */
-    .date-input {
-      height: 38px;
-      padding: 0 10px;
-      background: var(--surface);
-      border: 1.5px solid var(--border);
-      border-radius: var(--radius-sm);
-      font-size: 13px;
-      font-family: 'Inter', sans-serif;
-      color: var(--text-1);
-      transition: border-color var(--tr);
-      outline: none;
-    }
-    .date-input:focus {
-      border-color: var(--border-focus);
-      box-shadow: 0 0 0 3px rgba(79,70,229,.12);
+    @media (max-width: 700px) {
+      .topbar, .filter-strip, .table-header-bar, .table-wrap, .pagination { padding-left: 14px; padding-right: 14px; }
+      .filter-strip { flex-direction: column; align-items: stretch; }
+      .combo-input { width: 100%; }
+      .search-input { width: 160px; }
     }
   </style>
 </head>
 <body>
 
-<!-- Top Bar -->
-<header class="topbar">
-  <div class="topbar-brand">
-    <div class="brand-icon">📋</div>
-    <h1>Log Dashboard</h1>
+<!-- ── Login ─────────────────────────────────────────────────── -->
+<div class="login-overlay show" id="loginOverlay">
+  <div class="login-box">
+    <div class="login-logo">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+    </div>
+    <h2>Dashboard Access</h2>
+    <p>Enter your token to continue.</p>
+    <input class="login-input" id="loginToken" type="password" placeholder="Paste your dashboard token…" autocomplete="off">
+    <div class="login-error" id="loginError">Invalid token — please try again.</div>
+    <button class="btn btn-primary" style="width:100%;justify-content:center;height:40px" onclick="submitLogin()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+      Continue
+    </button>
   </div>
-  <div class="topbar-status">
-    <div class="status-dot" id="statusDot"></div>
-    <span id="statusText">Checking…</span>
+</div>
+
+<!-- ── Topbar ─────────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-left">
+    <div class="brand">
+      <div class="brand-logo">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      </div>
+      <span class="brand-name">Log <span>Viewer</span></span>
+    </div>
+    <div class="topbar-sep"></div>
+    <div class="entry-pill" title="Total logs loaded">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="9" x2="9" y2="21"/></svg>
+      <span><strong id="logCount">—</strong> entries</span>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="status-indicator">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Checking…</span>
+    </div>
+    <div class="topbar-sep"></div>
+    <button class="icon-btn" title="Refresh" onclick="searchLogs()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+    </button>
+    <button class="icon-btn" title="Export logs" onclick="exportLogs()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    </button>
   </div>
 </header>
 
-<!-- Login Overlay -->
-<div class="login-overlay show" id="loginOverlay">
-  <div class="login-box">
-    <h2>🔐 Dashboard Access</h2>
-    <p>Enter your dashboard token to continue.</p>
-    <input class="login-input" id="loginToken" type="password" placeholder="Dashboard token…" autocomplete="off">
-    <div class="login-error" id="loginError">Invalid token — please try again.</div>
-    <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="submitLogin()">Continue</button>
+<!-- ── Filter Strip ───────────────────────────────────────────── -->
+<div class="filter-strip">
+  <span class="filter-label">Filter</span>
+
+  <div class="combo-wrap" id="wrapProject">
+    <input class="combo-input" id="inProject" placeholder="Project ID…" autocomplete="off" spellcheck="false">
+    <svg class="combo-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+    <div class="combo-list" id="listProject"></div>
   </div>
+
+  <div class="combo-wrap" id="wrapDevice">
+    <input class="combo-input" id="inDevice" placeholder="Device ID…" autocomplete="off" spellcheck="false">
+    <svg class="combo-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+    <div class="combo-list" id="listDevice"></div>
+  </div>
+
+  <div class="filter-sep"></div>
+
+  <div style="display:flex;align-items:center;gap:6px">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-3)"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+    <input type="datetime-local" class="date-input" id="fromDate" title="From date">
+    <span style="font-size:11px;color:var(--text-3)">→</span>
+    <input type="datetime-local" class="date-input" id="toDate" title="To date">
+  </div>
+
+  <div class="filter-sep"></div>
+
+  <button class="btn btn-primary" id="btnSearch" onclick="searchLogs()">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    Search
+  </button>
+  <button class="btn btn-ghost" onclick="clearFilters()">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    Clear
+  </button>
 </div>
 
-<!-- Filter Bar -->
-<div class="filter-bar">
-  <!-- Project ID combobox -->
-  <div class="filter-group">
-    <label>Project ID</label>
-    <div class="combo-wrap" id="wrapProject">
-      <input class="combo-input" id="inProject" placeholder="Search or select…" autocomplete="off" spellcheck="false">
-      <svg class="combo-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-      <div class="combo-list" id="listProject"></div>
-    </div>
-  </div>
-
-  <!-- Device ID combobox -->
-  <div class="filter-group">
-    <label>Device ID</label>
-    <div class="combo-wrap" id="wrapDevice">
-      <input class="combo-input" id="inDevice" placeholder="Search or select…" autocomplete="off" spellcheck="false">
-      <svg class="combo-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-      <div class="combo-list" id="listDevice"></div>
-    </div>
-  </div>
-
-  <!-- Date Range -->
-  <div class="filter-group">
-    <label>From</label>
-    <input type="datetime-local" class="date-input" id="fromDate">
-  </div>
-  <div class="filter-group">
-    <label>To</label>
-    <input type="datetime-local" class="date-input" id="toDate">
-  </div>
-
-  <div class="filter-actions">
-    <button class="btn btn-primary" id="btnSearch" onclick="searchLogs()">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      Search
-    </button>
-    <button class="btn btn-secondary" id="btnExport" onclick="exportLogs()">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      Export
-    </button>
-  </div>
+<!-- ── Table Header Bar ───────────────────────────────────────── -->
+<div class="table-header-bar">
+  <span class="result-info">Showing <strong id="resultCount">—</strong> of <strong id="totalCount">—</strong> logs</span>
+  <button class="sort-btn" title="Newest first">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+    Newest first
+  </button>
 </div>
 
-<!-- Info Bar -->
-<div class="info-bar">
-  <span class="count">Showing <strong id="logCount">—</strong> logs</span>
-</div>
-
-<!-- Table -->
+<!-- ── Table ──────────────────────────────────────────────────── -->
 <div class="table-wrap">
   <table id="logTable" style="display:none">
     <thead>
       <tr>
+        <th>Level</th>
         <th>Timestamp</th>
         <th>Project</th>
         <th>Device</th>
-        <th>Log Preview</th>
+        <th>Message</th>
         <th>Trace ID</th>
         <th></th>
       </tr>
     </thead>
     <tbody id="logBody"></tbody>
   </table>
-  <!-- Empty state -->
   <div class="empty-state" id="emptyState">
-    <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#d1d5db" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-    <p>No logs found</p>
-    <span>Apply filters and click Search</span>
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#d1d5db" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+    <p>No logs to display</p>
+    <span>Apply filters above and press Search</span>
   </div>
 </div>
 
-<!-- Pagination -->
-<div class="pagination" id="paginationBar">
-  <button class="btn btn-secondary" style="min-width:160px;justify-content:center" onclick="loadMore()">Load More</button>
-</div>
+<!-- ── Pagination ─────────────────────────────────────────────── -->
+<div class="pagination" id="paginationBar"></div>
 
-<!-- Detail Modal -->
+<!-- ── Detail Modal ───────────────────────────────────────────── -->
 <div class="overlay" id="overlay" onclick="closeModal(event)">
   <div class="modal" onclick="event.stopPropagation()">
     <div class="modal-head">
-      <h2>Log Detail</h2>
+      <h2>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        Log Detail
+      </h2>
       <div class="modal-head-actions">
         <button class="icon-btn" title="Copy all" onclick="copyAll()">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         </button>
         <button class="icon-btn" title="Close" onclick="document.getElementById('overlay').classList.remove('show')">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
     </div>
@@ -746,20 +419,37 @@
   </div>
 </div>
 
-<!-- Toast -->
+<!-- ── Toast ──────────────────────────────────────────────────── -->
 <div class="toast" id="toast"></div>
 
+<!-- ── Status Bar ─────────────────────────────────────────────── -->
+<div class="statusbar">
+  <div class="statusbar-left">
+    <div class="statusbar-item">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      <span id="queueInfo">Queue: —</span>
+    </div>
+    <div class="statusbar-item">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      <span id="dlqInfo">DLQ: —</span>
+    </div>
+  </div>
+  <div class="statusbar-right">
+    <span>Log Ingestion Platform</span>
+    <span style="opacity:.45">•</span>
+    <span>v2.0</span>
+  </div>
+</div>
+
 <script>
-// ── State ──────────────────────────────────────────────────────────────────
+// ── State ───────────────────────────────────────────────────────────────────
 const API = window.location.origin;
-let allLogs = [], nextCursor = null, currentLog = null;
+let allLogs = [], currentLog = null;
+let currentPage = 1, totalPages = 1, totalLogs = 0, pageSize = 250;
 
-// ── Auth ──────────────────────────────────────────────────────────────────
+// ── Auth ────────────────────────────────────────────────────────────────────
 function getToken() { return sessionStorage.getItem('dashboard_token') || ''; }
-
-function authHeaders() {
-  return { 'X-Dashboard-Token': getToken() };
-}
+function authHeaders() { return { 'X-Dashboard-Token': getToken() }; }
 
 function showLogin(error) {
   if (error) document.getElementById('loginError').classList.add('show');
@@ -769,7 +459,6 @@ function showLogin(error) {
 async function submitLogin() {
   const tok = document.getElementById('loginToken').value.trim();
   if (!tok) return;
-  // Verify token against a protected endpoint
   const res = await fetch(`${API}/logs/distinct?field=project_id&limit=1`, {
     headers: { 'X-Dashboard-Token': tok }
   });
@@ -784,24 +473,18 @@ async function submitLogin() {
   }
 }
 
-// Init — show login if no token stored
-if (!getToken()) {
-  showLogin(false);
-} else {
-  document.getElementById('loginOverlay').classList.remove('show');
-}
+if (!getToken()) { showLogin(false); }
+else { document.getElementById('loginOverlay').classList.remove('show'); }
+document.getElementById('loginToken').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
 
-document.getElementById('loginToken').addEventListener('keydown', e => {
-  if (e.key === 'Enter') submitLogin();
-});
-
-
-// ── Health ─────────────────────────────────────────────────────────────────
+// ── Health ──────────────────────────────────────────────────────────────────
 async function checkHealth() {
   if (!getToken()) return;
   try {
     const d = await fetch(`${API}/health`).then(r => r.json());
-    document.getElementById('statusText').textContent = `Queue: ${d.queue_depth} | DLQ: ${d.dlq_depth}`;
+    document.getElementById('queueInfo').textContent = `Queue: ${d.queue_depth}`;
+    document.getElementById('dlqInfo').textContent = `DLQ: ${d.dlq_depth}`;
+    document.getElementById('statusText').textContent = 'Live';
     document.getElementById('statusDot').style.background = 'var(--success)';
   } catch {
     document.getElementById('statusText').textContent = 'Disconnected';
@@ -811,7 +494,7 @@ async function checkHealth() {
 checkHealth();
 setInterval(checkHealth, 30000);
 
-// ── Combobox factory ───────────────────────────────────────────────────────
+// ── Combobox ────────────────────────────────────────────────────────────────
 function initCombo(field, inputId, listId, wrapId) {
   const input = document.getElementById(inputId);
   const list  = document.getElementById(listId);
@@ -819,69 +502,39 @@ function initCombo(field, inputId, listId, wrapId) {
   let timer = null, lastQ = null;
 
   async function load(q) {
-    if (q === lastQ) return;
-    lastQ = q;
+    if (q === lastQ) return; lastQ = q;
     list.innerHTML = '<div class="combo-loading"><div class="spin"></div> Loading…</div>';
     try {
-      const params = new URLSearchParams({ field, limit: 15 });
-      if (q) params.set('prefix', q);
       const project = document.getElementById('inProject').value.trim();
-    const device  = document.getElementById('inDevice').value.trim();
-    const params  = new URLSearchParams({ field, limit: 15 });
-    if (q) params.set('prefix', q);
-    if (project) params.set('project_id_filter', project);
-    if (device)  params.set('device_id_filter', device);
-
-    const d = await fetch(`${API}/logs/distinct?${params}`, {
-      headers: authHeaders()
-    }).then(r => {
-      if (r.status === 401) { showLogin(true); throw new Error('Unauthorized'); }
-      return r.json();
-    });
+      const device  = document.getElementById('inDevice').value.trim();
+      const params  = new URLSearchParams({ field, limit: 15 });
+      if (q) params.set('prefix', q);
+      if (project) params.set('project_id_filter', project);
+      if (device)  params.set('device_id_filter', device);
+      const d = await fetch(`${API}/logs/distinct?${params}`, { headers: authHeaders() }).then(r => {
+        if (r.status === 401) { showLogin(true); throw new Error('Unauthorized'); }
+        return r.json();
+      });
       renderList(d.values || [], q);
-    } catch {
-      list.innerHTML = '<div class="combo-empty">Failed to load</div>';
-    }
+    } catch { list.innerHTML = '<div class="combo-empty">Failed to load</div>'; }
   }
 
   function renderList(values, q) {
-    if (!values.length) {
-      list.innerHTML = '<div class="combo-empty">No results</div>';
-      return;
-    }
+    if (!values.length) { list.innerHTML = '<div class="combo-empty">No results</div>'; return; }
     list.innerHTML = values.map(v => {
       const display = q ? v.replace(new RegExp(`^(${esc(q)})`, 'i'), '<em>$1</em>') : v;
       return `<div class="combo-item" data-val="${esc(v)}">${display}</div>`;
     }).join('');
     list.querySelectorAll('.combo-item').forEach(el => {
-      el.addEventListener('click', () => {
-        input.value = el.dataset.val;
-        closeList();
-        searchLogs();
-      });
+      el.addEventListener('click', () => { input.value = el.dataset.val; closeList(); searchLogs(); });
     });
   }
 
-  function openList() {
-    wrap.classList.add('open');
-    load(input.value.trim());
-  }
-
+  function openList() { wrap.classList.add('open'); load(input.value.trim()); }
   function closeList() { wrap.classList.remove('open'); }
-
   input.addEventListener('focus', openList);
-  input.addEventListener('input', () => {
-    wrap.classList.add('open');
-    clearTimeout(timer);
-    timer = setTimeout(() => load(input.value.trim()), 250);
-  });
-
-  // Close on outside click
-  document.addEventListener('click', e => {
-    if (!wrap.contains(e.target)) closeList();
-  });
-
-  // Keyboard navigation
+  input.addEventListener('input', () => { wrap.classList.add('open'); clearTimeout(timer); timer = setTimeout(() => load(input.value.trim()), 250); });
+  document.addEventListener('click', e => { if (!wrap.contains(e.target)) closeList(); });
   input.addEventListener('keydown', e => {
     if (e.key === 'Escape') { closeList(); input.blur(); }
     if (e.key === 'Enter')  { closeList(); searchLogs(); }
@@ -889,14 +542,10 @@ function initCombo(field, inputId, listId, wrapId) {
       e.preventDefault();
       const items = [...list.querySelectorAll('.combo-item')];
       const cur   = list.querySelector('.combo-item.active');
-      let idx     = items.indexOf(cur);
+      let idx = items.indexOf(cur);
       items.forEach(i => i.classList.remove('active'));
-      idx = e.key === 'ArrowDown' ? Math.min(idx + 1, items.length - 1) : Math.max(idx - 1, 0);
-      if (items[idx]) { items[idx].classList.add('active'); items[idx].scrollIntoView({ block: 'nearest' }); }
-    }
-    if (e.key === 'Enter') {
-      const cur = list.querySelector('.combo-item.active');
-      if (cur) { input.value = cur.dataset.val; closeList(); searchLogs(); }
+      idx = e.key === 'ArrowDown' ? Math.min(idx+1, items.length-1) : Math.max(idx-1, 0);
+      if (items[idx]) { items[idx].classList.add('active'); items[idx].scrollIntoView({block:'nearest'}); }
     }
   });
 }
@@ -904,68 +553,211 @@ function initCombo(field, inputId, listId, wrapId) {
 initCombo('project_id', 'inProject', 'listProject', 'wrapProject');
 initCombo('device_id',  'inDevice',  'listDevice',  'wrapDevice');
 
-// ── Search / Fetch ─────────────────────────────────────────────────────────
-async function searchLogs() {
-  allLogs = []; nextCursor = null;
-  document.getElementById('logBody').innerHTML = '';
-  await fetchLogs(true);
+// ── Filters ─────────────────────────────────────────────────────────────────
+function clearFilters() {
+  document.getElementById('inProject').value = '';
+  document.getElementById('inDevice').value  = '';
+  document.getElementById('fromDate').value  = '';
+  document.getElementById('toDate').value    = '';
 }
 
-async function fetchLogs(fresh) {
+// ── Filter params helper ─────────────────────────────────────────────────────
+function getFilterParams() {
+  const p = new URLSearchParams();
   const project  = document.getElementById('inProject').value.trim();
   const device   = document.getElementById('inDevice').value.trim();
   const fromDate = document.getElementById('fromDate').value;
   const toDate   = document.getElementById('toDate').value;
-  const params  = new URLSearchParams({ limit: 50 });
-  if (project)  params.set('project_id', project);
-  if (device)   params.set('device_id',  device);
-  if (fromDate) params.set('from_dt', new Date(fromDate).toISOString());
-  if (toDate)   params.set('to_dt',   new Date(toDate).toISOString());
-  if (nextCursor) params.set('last_id', nextCursor);
+  if (project) p.set('project_id', project);
+  if (device)  p.set('device_id',  device);
+  if (fromDate) {
+    const fd = new Date(fromDate);
+    if (!isNaN(fd)) p.set('from_dt', fd.toISOString());
+  }
+  if (toDate) {
+    let td = new Date(toDate);
+    if (!isNaN(td)) {
+      // If user picked a date with time 00:00, bump to end of day
+      // so the filter includes all logs from that day
+      if (td.getHours() === 0 && td.getMinutes() === 0 && td.getSeconds() === 0) {
+        td.setHours(23, 59, 59, 999);
+      }
+      p.set('to_dt', td.toISOString());
+    }
+  }
+  return p;
+}
 
+// ── Search (reset to page 1, fetch count + page) ─────────────────────────────
+async function searchLogs() {
+  currentPage = 1;
   setLoading(true);
   try {
-    const res = await fetch(`${API}/logs?${params}`, { headers: authHeaders() });
-    if (res.status === 401) { showLogin(true); setLoading(false); return; }
-    const d = await res.json();
-    allLogs = allLogs.concat(d.logs);
-    nextCursor = d.next_cursor;
-    appendRows(d.logs);
-    document.getElementById('logCount').textContent = allLogs.length + (nextCursor ? '+' : '');
-    document.getElementById('logTable').style.display = allLogs.length ? '' : 'none';
-    document.getElementById('emptyState').classList.toggle('show', allLogs.length === 0);
-    document.getElementById('paginationBar').classList.toggle('show', !!nextCursor);
-  } catch(e) {
-    toast('❌ ' + e.message);
+    // Fetch total count + first page in parallel
+    const fp = getFilterParams();
+    const [countRes, logsRes] = await Promise.all([
+      fetch(`${API}/logs/count?${fp}`, { headers: authHeaders() }),
+      fetch(`${API}/logs?${fp}&limit=${pageSize}&skip=0`, { headers: authHeaders() }),
+    ]);
+    if (countRes.status === 401 || logsRes.status === 401) { showLogin(true); setLoading(false); return; }
+    const countData = await countRes.json();
+    const logsData  = await logsRes.json();
+    totalLogs  = countData.total;
+    totalPages = Math.max(1, Math.ceil(totalLogs / pageSize));
+    allLogs    = logsData.logs;
+    renderTable();
+  } catch(err) {
+    showToast('error', 'Search failed: ' + err.message);
   }
   setLoading(false);
 }
 
-function loadMore() { fetchLogs(false); }
+async function goToPage(page) {
+  if (page < 1 || page > totalPages || page === currentPage) return;
+  currentPage = page;
+  const skip = (currentPage - 1) * pageSize;
+  setLoading(true);
+  try {
+    const fp = getFilterParams();
+    fp.set('limit', pageSize);
+    fp.set('skip', skip);
+    const res = await fetch(`${API}/logs?${fp}`, { headers: authHeaders() });
+    if (res.status === 401) { showLogin(true); setLoading(false); return; }
+    const d = await res.json();
+    allLogs = d.logs;
+    renderTable();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch(err) {
+    showToast('error', 'Fetch failed: ' + err.message);
+  }
+  setLoading(false);
+}
 
-// ── Render rows ────────────────────────────────────────────────────────────
-function appendRows(logs) {
+function changePageSize(newSize) {
+  pageSize = parseInt(newSize, 10);
+  currentPage = 1;
+  searchLogs();
+}
+
+// ── Render table + pagination ────────────────────────────────────────────────
+function renderTable() {
+  const fmtNum = n => n.toLocaleString('en-IN');
+  document.getElementById('logCount').textContent    = fmtNum(totalLogs);
+  document.getElementById('resultCount').textContent = fmtNum(allLogs.length);
+  document.getElementById('totalCount').textContent  = fmtNum(totalLogs);
+  document.getElementById('logTable').style.display  = allLogs.length ? '' : 'none';
+  document.getElementById('emptyState').classList.toggle('show', allLogs.length === 0);
+
+  // Render rows
   const tbody = document.getElementById('logBody');
-  logs.forEach((log, i) => {
-    const idx = allLogs.length - logs.length + i;
+  tbody.innerHTML = '';
+  allLogs.forEach((log, idx) => {
+    const level = detectLevel(log.log);
+    const lvlHtml = levelBadge(level);
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${fmtTime(log.received_at)}</td>
+      <td>${lvlHtml}</td>
+      <td class="td-time">${fmtTime(log.received_at)}</td>
       <td><span class="pill pill-project">${e(log.project_id||'—')}</span></td>
       <td><span class="pill pill-device">${e(log.device_id||'—')}</span></td>
-      <td>${e(preview(log.log))}</td>
-      <td><span class="trace-mono">${log.trace_id ? log.trace_id.slice(0,8)+'…' : '—'}</span></td>
-      <td class="row-arrow">›</td>
+      <td class="td-msg">${e(preview(log.log))}</td>
+      <td class="td-trace">${log.trace_id ? log.trace_id.slice(0,8)+'…' : '—'}</td>
+      <td class="td-arrow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></td>
     `;
     tr.addEventListener('click', () => openDetail(idx));
     tbody.appendChild(tr);
   });
+
+  renderPagination();
+}
+
+function renderPagination() {
+  const bar = document.getElementById('paginationBar');
+  if (totalPages <= 1) { bar.classList.remove('show'); bar.innerHTML = ''; return; }
+  bar.classList.add('show');
+
+  const pages = buildPageNumbers(currentPage, totalPages);
+  let html = '';
+
+  // Prev button
+  html += `<button class="pg-btn" ${currentPage===1?'disabled':''} onclick="goToPage(${currentPage-1})" title="Previous">`;
+  html += `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>`;
+  html += `</button>`;
+
+  // Page numbers
+  pages.forEach(p => {
+    if (p === '...') {
+      html += `<span class="pg-ellipsis">…</span>`;
+    } else {
+      html += `<button class="pg-btn${p===currentPage?' active':''}" onclick="goToPage(${p})">${p}</button>`;
+    }
+  });
+
+  // Next button
+  html += `<button class="pg-btn" ${currentPage===totalPages?'disabled':''} onclick="goToPage(${currentPage+1})" title="Next">`;
+  html += `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
+  html += `</button>`;
+
+  // Per-page selector
+  html += `<span class="pg-info">`;
+  html += `<select class="pg-select" onchange="changePageSize(this.value)">`;
+  [50, 100, 250, 500].forEach(s => {
+    html += `<option value="${s}"${s===pageSize?' selected':''}>${s} / page</option>`;
+  });
+  html += `</select></span>`;
+
+  bar.innerHTML = html;
+}
+
+// Build page numbers array with ellipsis: [1, 2, 3, '...', 142, 143, 144]
+function buildPageNumbers(current, total) {
+  if (total <= 9) return Array.from({length: total}, (_, i) => i + 1);
+  const pages = [];
+  const addRange = (from, to) => { for (let i = from; i <= to; i++) pages.push(i); };
+
+  // Always show first 2
+  addRange(1, 2);
+
+  // Middle range around current
+  const lo = Math.max(3, current - 1);
+  const hi = Math.min(total - 2, current + 1);
+
+  if (lo > 3) pages.push('...');
+  addRange(lo, hi);
+  if (hi < total - 2) pages.push('...');
+
+  // Always show last 2
+  addRange(total - 1, total);
+
+  return pages;
+}
+
+function detectLevel(obj) {
+  if (!obj || typeof obj !== 'object') return 'info';
+  const raw = (obj.level || obj.severity || obj.lvl || '').toString().toLowerCase();
+  if (raw.includes('error') || raw.includes('err') || raw.includes('fatal')) return 'error';
+  if (raw.includes('warn')) return 'warn';
+  if (raw.includes('debug')) return 'debug';
+  if (raw.includes('success') || raw.includes('ok')) return 'success';
+  return 'info';
+}
+
+function levelBadge(level) {
+  const map = {
+    info:    ['lvl-info',    'Info'],
+    debug:   ['lvl-debug',   'Debug'],
+    warn:    ['lvl-warn',    'Warn'],
+    error:   ['lvl-error',   'Error'],
+    success: ['lvl-success', 'OK'],
+  };
+  const [cls, label] = map[level] || map.info;
+  return `<span class="lvl ${cls}"><span class="lvl-dot"></span>${label}</span>`;
 }
 
 function preview(obj) {
   if (!obj || typeof obj !== 'object') return '—';
-  const m = obj.message || obj.msg || obj.error;
-  if (m) return String(m).slice(0, 90);
+  const m = obj.message || obj.msg || obj.error || obj.text;
+  if (m) return String(m).slice(0, 100);
   const keys = Object.keys(obj);
   return keys.length ? `{${keys.slice(0,3).join(', ')}${keys.length>3?'…':''}}` : '{}';
 }
@@ -978,10 +770,11 @@ function fmtTime(iso) {
   } catch { return iso || '—'; }
 }
 
-// ── Detail Modal ───────────────────────────────────────────────────────────
+// ── Detail Modal ──────────────────────────────────────────────────────────────
 function openDetail(idx) {
   currentLog = allLogs[idx];
   if (!currentLog) return;
+  const level = detectLevel(currentLog.log);
   document.getElementById('modalBody').innerHTML = `
     <div class="section-label">Metadata</div>
     <div class="meta-grid">
@@ -989,21 +782,22 @@ function openDetail(idx) {
       <div class="meta-card"><div class="lbl">Project ID</div><div class="val">${e(currentLog.project_id||'—')}</div></div>
       <div class="meta-card"><div class="lbl">Device ID</div><div class="val">${e(currentLog.device_id||'—')}</div></div>
       <div class="meta-card"><div class="lbl">Trace ID</div><div class="val">${e(currentLog.trace_id||'—')}</div></div>
+      <div class="meta-card"><div class="lbl">Level</div><div class="val">${levelBadge(level)}</div></div>
     </div>
     <div class="json-section">
       <div class="json-head">
         <div class="section-label" style="margin:0">Form Data</div>
-        <button class="icon-btn" onclick="copyField('form_data')" title="Copy form_data">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        <button class="icon-btn" onclick="copyField('form_data')" title="Copy">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         </button>
       </div>
       <div class="json-block">${highlight(currentLog.form_data)}</div>
     </div>
     <div class="json-section">
       <div class="json-head">
-        <div class="section-label" style="margin:0">Log</div>
-        <button class="icon-btn" onclick="copyField('log')" title="Copy log">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        <div class="section-label" style="margin:0">Log Payload</div>
+        <button class="icon-btn" onclick="copyField('log')" title="Copy">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         </button>
       </div>
       <div class="json-block">${highlight(currentLog.log)}</div>
@@ -1021,7 +815,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') document.getElementById('overlay').classList.remove('show');
 });
 
-// ── JSON Syntax Highlight ──────────────────────────────────────────────────
+// ── JSON Highlight ────────────────────────────────────────────────────────────
 function highlight(obj) {
   if (obj === null || obj === undefined) return '<span class="jz">null</span>';
   return JSON.stringify(obj, null, 2).replace(
@@ -1036,37 +830,34 @@ function highlight(obj) {
   );
 }
 
-// ── Copy ───────────────────────────────────────────────────────────────────
+// ── Copy ──────────────────────────────────────────────────────────────────────
 function copyField(f) {
   if (!currentLog) return;
   navigator.clipboard.writeText(JSON.stringify(currentLog[f], null, 2))
-    .then(() => toast('✅ Copied ' + f));
+    .then(() => showToast('success', 'Copied ' + f));
 }
 
 function copyAll() {
   if (!currentLog) return;
   navigator.clipboard.writeText(JSON.stringify({
-    project_id: currentLog.project_id,
-    device_id:  currentLog.device_id,
-    trace_id:   currentLog.trace_id,
-    received_at:currentLog.received_at,
-    form_data:  currentLog.form_data,
-    log:        currentLog.log,
-  }, null, 2)).then(() => toast('✅ Copied full record'));
+    project_id:  currentLog.project_id,
+    device_id:   currentLog.device_id,
+    trace_id:    currentLog.trace_id,
+    received_at: currentLog.received_at,
+    form_data:   currentLog.form_data,
+    log:         currentLog.log,
+  }, null, 2)).then(() => showToast('success', 'Copied full record'));
 }
 
-// ── Export ─────────────────────────────────────────────────────────────────
+// ── Export ────────────────────────────────────────────────────────────────────
 async function exportLogs() {
-  const project = document.getElementById('inProject').value.trim();
-  const device  = document.getElementById('inDevice').value.trim();
+  const project  = document.getElementById('inProject').value.trim();
+  const device   = document.getElementById('inDevice').value.trim();
   const fromDate = document.getElementById('fromDate').value;
   const toDate   = document.getElementById('toDate').value;
-  if (!project && !device && !fromDate) { toast('⚠️ Apply at least one filter first'); return; }
+  if (!project && !device && !fromDate) { showToast('warn', 'Apply at least one filter first'); return; }
 
-  const btn = document.getElementById('btnExport');
-  btn.disabled = true;
-  btn.innerHTML = '<div class="spin"></div> Exporting…';
-
+  const btn = document.getElementById('btnSearch');
   const params = new URLSearchParams();
   if (project)  params.set('project_id', project);
   if (device)   params.set('device_id',  device);
@@ -1075,46 +866,42 @@ async function exportLogs() {
 
   try {
     const res = await fetch(`${API}/logs/export?${params}`, { headers: authHeaders() });
-    if (res.status === 401) { showLogin(true); }
-    else if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (res.status === 401) { showLogin(true); return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
-    a.href = url;
-    a.download = `logs_${project||'all'}_${new Date().toISOString().slice(0,10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast('✅ Export downloaded');
+    a.href = url; a.download = `logs_${project||'all'}_${new Date().toISOString().slice(0,10)}.json`;
+    a.click(); URL.revokeObjectURL(url);
+    showToast('success', 'Export downloaded');
   } catch(err) {
-    toast('❌ Export failed: ' + err.message);
+    showToast('error', 'Export failed: ' + err.message);
   }
-  btn.disabled = false;
-  btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Export`;
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function setLoading(on) {
   const btn = document.getElementById('btnSearch');
   btn.disabled = on;
   btn.innerHTML = on
     ? '<div class="spin"></div> Searching…'
-    : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Search`;
+    : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Search';
 }
 
-function toast(msg) {
+function showToast(type, msg) {
+  const icons = {
+    success: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>',
+    error:   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+    warn:    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2.2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  };
   const t = document.getElementById('toast');
-  t.textContent = msg;
+  t.innerHTML = (icons[type] || '') + msg;
   t.classList.add('show');
   clearTimeout(t._timer);
-  t._timer = setTimeout(() => t.classList.remove('show'), 2600);
+  t._timer = setTimeout(() => t.classList.remove('show'), 2800);
 }
 
-function e(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
+function e(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 // Initial state

@@ -215,6 +215,47 @@ async def ingest_batch(
     }
 
 
+# ── Count Endpoint ────────────────────────────────────────────────────────────
+
+def _build_query(
+    project_id: Optional[str] = None,
+    device_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    from_dt: Optional[datetime] = None,
+    to_dt: Optional[datetime] = None,
+) -> dict:
+    """Build a MongoDB query dict from common filter parameters."""
+    query: dict = {}
+    if trace_id:    query["trace_id"]   = trace_id
+    if project_id:  query["project_id"] = project_id
+    if device_id:   query["device_id"]  = device_id
+    if from_dt or to_dt:
+        query["received_at"] = {}
+        if from_dt: query["received_at"]["$gte"] = from_dt
+        if to_dt:   query["received_at"]["$lte"] = to_dt
+    return query
+
+
+@app.get("/logs/count")
+async def logs_count(
+    request: Request,
+    project_id: Optional[str] = None,
+    device_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    from_dt: Optional[datetime] = None,
+    to_dt: Optional[datetime] = None,
+    _auth: None = Depends(verify_dashboard_token),
+):
+    """
+    Return total count of logs matching the given filters.
+    Uses count_documents() which leverages indexes for performance.
+    """
+    col = request.app.state.mongo_col
+    query = _build_query(project_id, device_id, trace_id, from_dt, to_dt)
+    total = await col.count_documents(query)
+    return {"total": total}
+
+
 # ── Query Endpoint ────────────────────────────────────────────────────────────
 
 @app.get("/logs")
@@ -227,10 +268,11 @@ async def query_logs(
     to_dt: Optional[datetime] = None,
     limit: int = 100,
     last_id: Optional[str] = None,
+    skip: int = 0,
     _auth: None = Depends(verify_dashboard_token),
 ):
     """
-    Fetch logs with optional filters and cursor-based pagination.
+    Fetch logs with optional filters and pagination.
 
     Filters (all optional, AND logic):
       - project_id:  exact match on project identifier
@@ -239,38 +281,30 @@ async def query_logs(
       - from_dt:     logs received at or after this datetime
       - to_dt:       logs received at or before this datetime
 
-    Pagination:
-      - First request: omit last_id. Response includes next_cursor.
-      - Next request: pass next_cursor as last_id to get the next page.
+    Pagination (two modes, skip takes precedence over last_id):
+      - skip/limit:  offset-based for numbered page navigation
+      - last_id:     cursor-based for infinite scroll (legacy)
       - Results sorted by _id descending (newest first).
 
-    Limit: 1–1000, default 100.
+    Limit: 1–1000, default 100. Skip: 0–100000.
     """
     col = request.app.state.mongo_col
-    query: dict = {}
+    query = _build_query(project_id, device_id, trace_id, from_dt, to_dt)
 
-    if trace_id:    query["trace_id"]   = trace_id
-    if project_id:  query["project_id"] = project_id
-    if device_id:   query["device_id"]  = device_id
-    if from_dt or to_dt:
-        query["received_at"] = {}
-        if from_dt: query["received_at"]["$gte"] = from_dt
-        if to_dt:   query["received_at"]["$lte"] = to_dt
-
-    if last_id:
+    # Cursor-based pagination (legacy, used only if skip is 0 and last_id set)
+    if last_id and skip == 0:
         try:
             query["_id"] = {"$lt": ObjectId(last_id)}
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid last_id cursor")
 
     limit = min(max(limit, 1), 1000)
-    docs = (
-        await col
-        .find(query)
-        .sort("_id", -1)
-        .limit(limit)
-        .to_list(limit)
-    )
+    skip = min(max(skip, 0), 100_000)
+
+    cursor = col.find(query).sort("_id", -1)
+    if skip > 0:
+        cursor = cursor.skip(skip)
+    docs = await cursor.limit(limit).to_list(limit)
 
     results = []
     for doc in docs:
