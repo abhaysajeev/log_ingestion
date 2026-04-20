@@ -421,8 +421,7 @@ async def main():
     """
     redis = Redis.from_url(REDIS_URL, decode_responses=True)
 
-    # fix #13: cap Motor connection pool — 5 per worker is sufficient
-    # Total MongoDB connections: 10 (FastAPI) + 5×2 (2 workers) = 20
+    # Total MongoDB connections: 10 (FastAPI) + 5×4 (4 workers) = 30
     mongo_client = AsyncIOMotorClient(
         MONGODB_URL,
         maxPoolSize=5,

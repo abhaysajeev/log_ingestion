@@ -252,7 +252,12 @@ async def logs_count(
     """
     col = request.app.state.mongo_col
     query = _build_query(project_id, device_id, trace_id, from_dt, to_dt)
-    total = await col.count_documents(query)
+    # estimatedDocumentCount() uses collection metadata (O(1)) when no filters are
+    # active — avoids a full aggregation scan on a multi-million-doc collection.
+    if not query:
+        total = await col.estimated_document_count()
+    else:
+        total = await col.count_documents(query)
     return {"total": total}
 
 
@@ -310,7 +315,10 @@ async def query_logs(
     for doc in docs:
         doc["id"] = str(doc.pop("_id"))
         if isinstance(doc.get("received_at"), datetime):
-            doc["received_at"] = doc["received_at"].isoformat()
+            dt = doc["received_at"]
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            doc["received_at"] = dt.isoformat()
         results.append(doc)
 
     next_cursor = results[-1]["id"] if len(results) == limit else None
@@ -339,15 +347,7 @@ async def export_logs(
     everything into memory at once.
     """
     col = request.app.state.mongo_col
-    query: dict = {}
-
-    if trace_id:    query["trace_id"]   = trace_id
-    if project_id:  query["project_id"] = project_id
-    if device_id:   query["device_id"]  = device_id
-    if from_dt or to_dt:
-        query["received_at"] = {}
-        if from_dt: query["received_at"]["$gte"] = from_dt
-        if to_dt:   query["received_at"]["$lte"] = to_dt
+    query = _build_query(project_id, device_id, trace_id, from_dt, to_dt)
 
     async def stream_docs():
         yield "[\n"

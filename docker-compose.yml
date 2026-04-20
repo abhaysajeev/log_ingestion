@@ -36,8 +36,8 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-    mem_limit: 200m
-    memswap_limit: 200m
+    mem_limit: 400m
+    memswap_limit: 400m
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -72,7 +72,7 @@ services:
     build: ./worker
     restart: unless-stopped
     deploy:
-      replicas: 2
+      replicas: 4
     environment:
       - REDIS_URL=redis://redis:6379
       - MONGODB_URL=mongodb://admin:${MONGO_PASSWORD}@mongodb:27017/logsdb?authSource=admin

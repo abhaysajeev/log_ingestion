@@ -28,6 +28,8 @@ RATE_LIMIT_PER_DEVICE: int = int(os.getenv("RATE_LIMIT_PER_DEVICE", "5000"))
 QUEUE_BACKPRESSURE_LIMIT: int = int(os.getenv("QUEUE_BACKPRESSURE_LIMIT", "50000"))
 ADMIN_TOKEN: str = os.getenv("ADMIN_TOKEN", "")
 DASHBOARD_TOKEN: str = os.getenv("DASHBOARD_TOKEN", "")
+# 2× the 60-second window — ensures the key outlives its window under clock skew
+_RATE_LIMIT_TTL = 120
 
 
 # ── Internal helper ───────────────────────────────────────────────────────────
@@ -101,10 +103,11 @@ async def deduct_rate_limit(request: Request, device_id: str, batch_size: int):
     window = int(time.time() // 60)
     key = f"ratelimit:device:{device_id}:{window}"
 
-    count = await redis.incrby(key, batch_size)
-    if count == batch_size:
-        # First write in this window — set expiry (120s for safety margin)
-        await redis.expire(key, 120)
+    # Pipeline both ops — saves one Redis round-trip on every ingest request
+    pipe = redis.pipeline()
+    pipe.incrby(key, batch_size)
+    pipe.expire(key, _RATE_LIMIT_TTL)
+    count, _ = await pipe.execute()
 
     if count > RATE_LIMIT_PER_DEVICE:
         reset_in = 60 - (int(time.time()) % 60)

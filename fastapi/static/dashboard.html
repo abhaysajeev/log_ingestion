@@ -76,10 +76,10 @@
     .search-input:focus { border-color: var(--accent); background: #fff; box-shadow: 0 0 0 3px rgba(37,99,235,.1); width: 260px; }
     .search-input::placeholder { color: var(--text-3); }
     .icon-btn {
-      width: 34px; height: 34px; border: 1.5px solid var(--border);
+      min-width: 34px; height: 34px; padding: 0 8px; border: 1.5px solid var(--border);
       background: var(--surface); border-radius: var(--r-sm);
       color: var(--text-2); cursor: pointer; display: flex; align-items: center;
-      justify-content: center; transition: all var(--tr);
+      justify-content: center; gap: 4px; transition: all var(--tr);
     }
     .icon-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
     .status-indicator { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); }
@@ -317,7 +317,10 @@
       <span id="statusText">Checking…</span>
     </div>
     <div class="topbar-sep"></div>
-    <button class="icon-btn" title="Refresh" onclick="searchLogs()">
+    <button class="icon-btn" title="Refresh now" onclick="searchLogs(); arReset()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+    </button>
+    <button class="icon-btn" id="arBtn" title="Auto-refresh off — click to enable (30s interval)" onclick="arToggle()">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
     </button>
     <button class="icon-btn" title="Export logs" onclick="exportLogs()">
@@ -445,7 +448,62 @@
 // ── State ───────────────────────────────────────────────────────────────────
 const API = window.location.origin;
 let allLogs = [], currentLog = null;
-let currentPage = 1, totalPages = 1, totalLogs = 0, pageSize = 250;
+let currentPage = 1, totalPages = 1, totalLogs = 0, pageSize = 50;
+
+// ── Auto-refresh ─────────────────────────────────────────────────────────────
+let _arInterval = null, _arEnabled = false;
+
+function arTick() {
+  if (!_arEnabled) return;
+  if (document.visibilityState === 'hidden') return;
+  if (document.getElementById('overlay').classList.contains('show')) return;
+  if (currentPage !== 1) return;
+  silentRefresh();
+}
+
+async function silentRefresh() {
+  try {
+    const fp = getFilterParams();
+    const [countRes, logsRes] = await Promise.all([
+      fetch(`${API}/logs/count?${fp}`, { headers: authHeaders() }),
+      fetch(`${API}/logs?${fp}&limit=${pageSize}&skip=0`, { headers: authHeaders() }),
+    ]);
+    if (countRes.status === 401 || logsRes.status === 401) { showLogin(true); return; }
+    if (!countRes.ok || !logsRes.ok) return;
+    const [countData, logsData] = await Promise.all([countRes.json(), logsRes.json()]);
+    totalLogs  = countData.total ?? totalLogs;
+    totalPages = Math.max(1, Math.ceil(totalLogs / pageSize));
+    allLogs    = logsData.logs ?? [];
+    renderTable();
+  } catch { /* network blip — ignore, try again next tick */ }
+}
+
+function arToggle() {
+  _arEnabled = !_arEnabled;
+  _arUpdateBtn();
+}
+
+function arReset() { /* no-op — 3s interval, nothing to reset */ }
+
+function _arUpdateBtn() {
+  const btn = document.getElementById('arBtn');
+  if (!btn) return;
+  if (_arEnabled) {
+    btn.title = 'Live — click to pause';
+    btn.style.color = 'var(--success)';
+    btn.style.borderColor = 'var(--success)';
+    btn.style.background = '#f0fdf4';
+    btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg><span style="font-size:11px;font-weight:600">Live</span>`;
+  } else {
+    btn.title = 'Click to enable live refresh (every 3s)';
+    btn.style.color = '';
+    btn.style.borderColor = '';
+    btn.style.background = '';
+    btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`;
+  }
+}
+
+_arInterval = setInterval(arTick, 3000);
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 function getToken() { return sessionStorage.getItem('dashboard_token') || ''; }
@@ -563,6 +621,11 @@ function clearFilters() {
 }
 
 // ── Filter params helper ─────────────────────────────────────────────────────
+function isoNoMs(date) {
+  // Strip milliseconds — Pydantic is stricter with .000Z than plain Z
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
 function getFilterParams() {
   const p = new URLSearchParams();
   const project  = document.getElementById('inProject').value.trim();
@@ -573,44 +636,43 @@ function getFilterParams() {
   if (device)  p.set('device_id',  device);
   if (fromDate) {
     const fd = new Date(fromDate);
-    if (!isNaN(fd)) p.set('from_dt', fd.toISOString());
+    if (!isNaN(fd)) p.set('from_dt', isoNoMs(fd));
   }
   if (toDate) {
     let td = new Date(toDate);
     if (!isNaN(td)) {
-      // If user picked a date with time 00:00, bump to end of day
-      // so the filter includes all logs from that day
       if (td.getHours() === 0 && td.getMinutes() === 0 && td.getSeconds() === 0) {
-        td.setHours(23, 59, 59, 999);
+        td.setHours(23, 59, 59, 0);
       }
-      p.set('to_dt', td.toISOString());
+      p.set('to_dt', isoNoMs(td));
     }
   }
   return p;
 }
 
 // ── Search (reset to page 1, fetch count + page) ─────────────────────────────
-async function searchLogs() {
+async function searchLogs(silent = false) {
   currentPage = 1;
-  setLoading(true);
+  if (!silent) setLoading(true);
   try {
-    // Fetch total count + first page in parallel
     const fp = getFilterParams();
     const [countRes, logsRes] = await Promise.all([
       fetch(`${API}/logs/count?${fp}`, { headers: authHeaders() }),
       fetch(`${API}/logs?${fp}&limit=${pageSize}&skip=0`, { headers: authHeaders() }),
     ]);
-    if (countRes.status === 401 || logsRes.status === 401) { showLogin(true); setLoading(false); return; }
+    if (countRes.status === 401 || logsRes.status === 401) { showLogin(true); if (!silent) setLoading(false); return; }
+    if (!countRes.ok) throw new Error(`Count API error ${countRes.status}: ${await countRes.text()}`);
+    if (!logsRes.ok)  throw new Error(`Logs API error ${logsRes.status}: ${await logsRes.text()}`);
     const countData = await countRes.json();
     const logsData  = await logsRes.json();
-    totalLogs  = countData.total;
+    totalLogs  = countData.total ?? 0;
     totalPages = Math.max(1, Math.ceil(totalLogs / pageSize));
-    allLogs    = logsData.logs;
+    allLogs    = logsData.logs ?? [];
     renderTable();
   } catch(err) {
     showToast('error', 'Search failed: ' + err.message);
   }
-  setLoading(false);
+  if (!silent) setLoading(false);
 }
 
 async function goToPage(page) {
@@ -703,7 +765,7 @@ function renderPagination() {
   html += `<span class="pg-info">`;
   html += `<select class="pg-select" onchange="changePageSize(this.value)">`;
   [50, 100, 250, 500].forEach(s => {
-    html += `<option value="${s}"${s===pageSize?' selected':''}>${s} / page</option>`;
+    html += `<option value="${s}"${s === pageSize ? ' selected' : ''}>${s} / page</option>`;
   });
   html += `</select></span>`;
 
@@ -766,8 +828,8 @@ function preview(obj) {
 function fmtTime(iso) {
   try {
     const d = new Date(iso);
-    return d.toLocaleDateString('en-IN',{day:'2-digit',month:'short'}) + ' '
-         + d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+    return d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'}) + ' '
+         + d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
   } catch { return iso || '—'; }
 }
 
