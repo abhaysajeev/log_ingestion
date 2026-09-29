@@ -1,0 +1,11 @@
+# nginx owns the host's ports 80 and 443 and serves the certificate itself.
+# Use when nothing else on the host listens on 80/443.
+services:
+  nginx:
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/https.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./certbot/www:/var/www/certbot:ro

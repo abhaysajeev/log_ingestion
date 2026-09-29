@@ -1,16 +1,13 @@
-version: "3.8"
+# Log ingestion platform. Ports are published by one of the two override files,
+# chosen with COMPOSE_FILE in .env (DEPLOYMENT.txt step 4):
+#   docker-compose.yml:docker-compose.https.yml   nginx owns 80/443 + certificate
+#   docker-compose.yml:docker-compose.proxied.yml  behind the host's reverse proxy
 
 services:
 
   nginx:
-    image: nginx:alpine
+    image: nginx:1.30-alpine
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/certs:/etc/nginx/certs:ro
     depends_on:
       fastapi:
         condition: service_healthy
@@ -26,11 +23,15 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - MONGODB_URL=mongodb://admin:${MONGO_PASSWORD}@mongodb:27017/logsdb?authSource=admin
-      - API_KEY=${API_KEY}
-      - RATE_LIMIT_PER_DEVICE=5000
-      - QUEUE_BACKPRESSURE_LIMIT=50000
+      - PROJECTS_FILE=/app/config/projects.json
+      - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-45}
+      - RATE_LIMIT_PER_PROJECT=${RATE_LIMIT_PER_PROJECT:-60000}
+      - QUEUE_BACKPRESSURE_LIMIT=${QUEUE_BACKPRESSURE_LIMIT:-50000}
       - ADMIN_TOKEN=${ADMIN_TOKEN}
-      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
+    volumes:
+      # Per-project keys and tokens (scripts/add_project.py); restart fastapi
+      # after changing it.
+      - ./config/projects.json:/app/config/projects.json:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -50,8 +51,6 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # ports:                           # uncomment for external debug access
-    #   - "127.0.0.1:6379:6379"        # not needed — services use Docker network
     command: >
       redis-server
       --appendonly yes
@@ -72,7 +71,7 @@ services:
     build: ./worker
     restart: unless-stopped
     deploy:
-      replicas: 4
+      replicas: 2
     environment:
       - REDIS_URL=redis://redis:6379
       - MONGODB_URL=mongodb://admin:${MONGO_PASSWORD}@mongodb:27017/logsdb?authSource=admin
@@ -82,25 +81,25 @@ services:
       - DLQ_STREAM=logs_dlq
       - MAIN_STREAM=logs_stream
       - CONSUMER_GROUP=workers
-      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-587}
-      - SMTP_USER=${SMTP_USER}
-      - SMTP_PASSWORD=${SMTP_PASSWORD}
-      - ALERT_EMAIL_TO=${ALERT_EMAIL_TO}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - ALERT_EMAIL_TO=${ALERT_EMAIL_TO:-}
       - ALERT_DLQ_THRESHOLD=${ALERT_DLQ_THRESHOLD:-10}
     depends_on:
       redis:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-    mem_limit: 100m       # fix #5: raised from 60m — Motor + asyncio + batch needs room
+    mem_limit: 100m
     memswap_limit: 100m
 
   mongodb:
     image: mongo:7
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:27017:27017"
+    # No published port: only the services above reach it. For a one-off
+    # shell:  sudo docker compose exec mongodb mongosh -u admin -p
     environment:
       MONGO_INITDB_ROOT_USERNAME: admin
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
@@ -114,31 +113,39 @@ services:
     mem_limit: 1200m
     memswap_limit: 1200m
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 10s
       retries: 5
 
-
+  # Nightly compressed dump into ./backups, the newest BACKUP_RETAIN_DAYS kept.
+  # The mongo image ships mongodump (the old Python/FastAPI-image backup had
+  # neither the script nor mongodump inside it and never produced a file).
   backup:
-    build: ./fastapi      # reuse FastAPI image — has Python + mongodump
+    image: mongo:7
     restart: unless-stopped
-    command: >
-      sh -c "while true; do
-        python3 /app/scripts/backup.py;
-        sleep 86400;
-      done"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        while true; do
+          file=/backups/logs-$$(date -u +%Y-%m-%d).archive.gz
+          if [ ! -s "$$file" ]; then
+            mongodump --uri "$$MONGODB_URL" --gzip --archive="$$file.part" && mv "$$file.part" "$$file" \
+              && echo "backup: $$file $$(du -h "$$file" | cut -f1)" || { rm -f "$$file.part"; echo "backup FAILED"; }
+          fi
+          find /backups -name 'logs-*.archive.gz' -mtime +"$$BACKUP_RETAIN_DAYS" -delete
+          sleep 86400
+        done
     environment:
       - MONGODB_URL=mongodb://admin:${MONGO_PASSWORD}@mongodb:27017/logsdb?authSource=admin
-      - BACKUP_DIR=/backups
-      - BACKUP_RETAIN_DAYS=30
+      - BACKUP_RETAIN_DAYS=${BACKUP_RETAIN_DAYS:-7}
     volumes:
       - ./backups:/backups
     depends_on:
       mongodb:
         condition: service_healthy
-    mem_limit: 80m
-    memswap_limit: 80m
+    mem_limit: 300m
+    memswap_limit: 300m
 
 volumes:
   redis_data:

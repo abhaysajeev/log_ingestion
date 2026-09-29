@@ -8,12 +8,18 @@ __pycache__/
 # ── Environment / Secrets ─────────────────────────────────
 .env
 # Do NOT commit .env — use .env.example as a template
+# Per-project ingest keys and dashboard tokens (config/projects.example.json is the template)
+config/projects.json
 
 # ── SSL Certificates ──────────────────────────────────────
 nginx/certs/*.pem
 nginx/certs/*.key
 nginx/certs/*.crt
 nginx/certs/*.csr
+
+# ── certbot's temporary proof files ───────────────────────
+certbot/www/*
+!certbot/www/.gitkeep
 
 # ── Backups ───────────────────────────────────────────────
 /backups/
