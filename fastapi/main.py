@@ -1,405 +1,259 @@
 """
-FastAPI Log Ingestion API — main application module.
+FastAPI Log Ingestion API.
 
-Endpoints:
-  GET  /health            — service health with queue/DLQ depth
-  POST /ingest/batch      — accept up to 100 logs per batch, queue to Redis Stream
-  GET  /logs              — query logs with filters and cursor-based pagination
-  GET  /logs/export       — stream all matching logs as JSON download
-  GET  /dashboard         — web dashboard for browsing logs
-  GET  /admin/dlq         — inspect dead-letter queue (admin-only)
-  POST /admin/dlq/replay  — replay DLQ entries to main stream (admin-only)
+  GET  /health                     queue and dead-letter depths
+  POST /ingest/batch               up to 100 logs; X-API-Key picks the project
+  GET  /p/<slug>/                  that project's dashboard (the page itself
+                                   holds nothing; its data calls need the token)
+  GET  /p/<slug>/api/meta          project name + the profile the page draws
+  GET  /p/<slug>/api/logs          one page of logs, newest first, filtered
+  GET  /p/<slug>/api/logs/<id>     one log, in full
+  GET  /p/<slug>/api/suggest       values seen lately, for a filter box
+  GET  /p/<slug>/api/export        the filtered logs as a JSON download
+  GET  /admin/dlq, POST /admin/dlq/replay   (X-Admin-Token)
 
-Authentication:
-  Single shared API_KEY for all devices (internal system).
-  No per-client keys — all devices are trusted, owned clients.
-
-Rate limiting:
-  Per device_id, measured in logs per minute. Extracted from the
-  batch body after Pydantic validation, using the first log's device_id.
+Every /p/<slug>/api/ call needs that project's X-Dashboard-Token and only ever
+reads that project's logs (profiles.build_query fences the query).
 """
 
 import json
 import os
+import re
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
+import pymongo
 import uvloop
 from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from redis.asyncio import Redis
 
+import projects as project_registry
+from database import RETENTION_DAYS, ensure_indexes
 from dependencies import (
     check_queue_pressure,
+    dashboard_project,
     deduct_rate_limit,
+    ingest_project,
     verify_admin_token,
-    verify_api_key,
-    verify_dashboard_token,
 )
-from database import ensure_indexes
 from middleware import TracingMiddleware
-from models import BatchIngestPayload
+from models import MAX_BATCH, BatchIngestPayload
+from profiles import PROFILES, BadFilter, build_query, public, suggest_field
 
-uvloop.install()  # Must be called before any event loop is created
+uvloop.install()  # before any event loop exists
 
-_indexes_created = False  # only run ensure_indexes once per process
+STATIC_DIR = Path(__file__).parent / "static"
+PER_PAGE_MAX = 200
+QUERY_MS = 15_000          # a dashboard query gives up rather than tie up MongoDB
+COUNT_MS = 5_000           # past this the page says "many" instead of a number
+SUGGEST_DAYS = 30
+EXPORT_MAX = 50_000
 
+_indexes_created = False
 
-# ── Application Lifespan ──────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Manages startup and shutdown of shared resources.
-
-    Startup:
-      1. Connect to Redis (shared across all requests in this worker)
-      2. Connect to MongoDB (pool capped at 10 per worker)
-      3. Create indexes if not already done
-      4. Create Redis consumer group for workers (idempotent)
-
-    Shutdown:
-      1. Close Redis connection
-      2. Close MongoDB connection pool
-    """
     global _indexes_created
-
-    app.state.redis = Redis.from_url(
-        os.getenv("REDIS_URL"), decode_responses=True
-    )
-
-    mongo_client = AsyncIOMotorClient(
-        os.getenv("MONGODB_URL"),
-        maxPoolSize=10,
-        minPoolSize=2,
-    )
+    app.state.projects = project_registry.load()
+    app.state.redis = Redis.from_url(os.getenv("REDIS_URL"), decode_responses=True)
+    mongo_client = AsyncIOMotorClient(os.getenv("MONGODB_URL"), maxPoolSize=10, minPoolSize=2)
     app.state.mongo_col = mongo_client["logsdb"]["logs"]
-
     if not _indexes_created:
         await ensure_indexes(app.state.mongo_col)
         _indexes_created = True
-
     try:
-        await app.state.redis.xgroup_create(
-            "logs_stream", "workers", id="0", mkstream=True
-        )
+        await app.state.redis.xgroup_create("logs_stream", "workers", id="0", mkstream=True)
     except Exception:
-        pass  # Group already exists
-
+        pass  # the group already exists
     yield
-
     await app.state.redis.aclose()
     mongo_client.close()
 
 
-# ── App Instance ──────────────────────────────────────────────────────────────
-
-app = FastAPI(lifespan=lifespan, title="Log Ingestion API")
+app = FastAPI(lifespan=lifespan, title="Log Ingestion API", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(TracingMiddleware)
 
-STATIC_DIR = Path(__file__).parent / "static"
+
+def _plain(doc: dict) -> dict:
+    """A MongoDB document as JSON-safe values."""
+    doc["id"] = str(doc.pop("_id"))
+    received = doc.get("received_at")
+    if isinstance(received, datetime):
+        doc["received_at"] = (received if received.tzinfo else received.replace(tzinfo=timezone.utc)).isoformat()
+    return doc
 
 
-# ── Dashboard ─────────────────────────────────────────────────────────────────
-
-@app.get("/dashboard")
-async def dashboard():
-    """Serve the log dashboard HTML page."""
-    html_path = STATIC_DIR / "dashboard.html"
-    return FileResponse(html_path, media_type="text/html")
+def _query(project, request: Request) -> dict:
+    try:
+        return build_query(project.profile, project.slug, request.query_params)
+    except BadFilter as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
-@app.get("/logs/distinct")
-async def logs_distinct(
-    request: Request,
-    field: str,
-    prefix: Optional[str] = None,
-    limit: int = 15,
-    _auth: None = Depends(verify_dashboard_token),
-):
-    """
-    Return distinct values for a given field (project_id or device_id).
-    Optionally filtered by a prefix string (for autocomplete dropdowns).
-    Capped at limit values (max 50).
-    """
-    if field not in ("project_id", "device_id"):
-        raise HTTPException(status_code=400, detail="field must be project_id or device_id")
-
-    col = request.app.state.mongo_col
-    limit = min(max(limit, 1), 50)
-
-    query = {}
-    if prefix:
-        # Case-insensitive prefix match
-        query[field] = {"$regex": f"^{prefix}", "$options": "i"}
-
-    values = await col.distinct(field, query)
-    values = sorted([v for v in values if v])[:limit]
-    return {"field": field, "values": values}
-
-
-# ── Health Endpoint ───────────────────────────────────────────────────────────
+# ── Health and ingest ─────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health(request: Request):
-    """Returns service health status including Redis queue and DLQ depths."""
     redis: Redis = request.app.state.redis
     queue_len = await redis.xlen("logs_stream")
     dlq_len = await redis.xlen("logs_dlq") if await redis.exists("logs_dlq") else 0
-    return {
-        "status": "ok",
-        "queue_depth": queue_len,
-        "dlq_depth": dlq_len,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+    return {"status": "ok", "queue_depth": queue_len, "dlq_depth": dlq_len,
+            "timestamp": datetime.now(timezone.utc).isoformat()}
 
-
-# ── Ingest Endpoint ──────────────────────────────────────────────────────────
 
 @app.post("/ingest/batch")
 async def ingest_batch(
     request: Request,
     batch: BatchIngestPayload,
-    _auth: None = Depends(verify_api_key),
+    project=Depends(ingest_project),
     _queue: None = Depends(check_queue_pressure),
 ):
-    """
-    Accept a batch of log events and queue them to Redis Stream.
-
-    Auth: single X-API-Key header check (all devices share one key).
-    Rate limit: per device_id from the body, applied after parse.
-
-    Each log entry is stored as a separate Redis Stream message with:
-      - trace_id:    from TracingMiddleware (UUID4)
-      - received_at: server epoch timestamp
-      - data:        JSON-serialized log entry (parsed by worker)
-    """
-    redis: Redis = request.app.state.redis
+    """Queue a batch to the Redis stream; the workers store it. The project is
+    the key's, whatever `project_id` the body carries."""
     trace_id = request.state.trace_id
     received_at = datetime.now(timezone.utc).timestamp()
-
     if not batch.logs:
         return {"accepted": 0, "trace_id": trace_id}
+    if len(batch.logs) > MAX_BATCH:
+        raise HTTPException(status_code=400, detail=f"Max {MAX_BATCH} logs per batch")
+    await deduct_rate_limit(request, project, len(batch.logs))
 
-    if len(batch.logs) > 100:
-        raise HTTPException(status_code=400, detail="Max 100 logs per batch")
-
-    # Rate limit by device_id — use the first log's device_id
-    # (all logs in a batch come from the same device in practice)
-    device_id = batch.logs[0].device_id
-    await deduct_rate_limit(request, device_id, len(batch.logs))
-
-    # Pipeline XADD — all logs queued in a single Redis round-trip
-    pipe = redis.pipeline()
-    for log in batch.logs:
-        pipe.xadd(
-            "logs_stream",
-            {
-                "trace_id":    trace_id,
-                "received_at": str(received_at),
-                "data":        log.model_dump_json(),
-            },
-            maxlen=500_000,
-            approximate=True,
-        )
+    pipe = request.app.state.redis.pipeline()
+    for entry in batch.logs:
+        data = entry.model_dump()
+        data["project_id"] = project.slug
+        pipe.xadd("logs_stream",
+                  {"trace_id": trace_id, "received_at": str(received_at), "data": json.dumps(data, default=str)},
+                  maxlen=500_000, approximate=True)
     await pipe.execute()
-
-    return {
-        "accepted":  len(batch.logs),
-        "trace_id":  trace_id,
-        "queued_at": datetime.fromtimestamp(received_at, tz=timezone.utc).isoformat(),
-    }
+    return {"accepted": len(batch.logs), "trace_id": trace_id,
+            "queued_at": datetime.fromtimestamp(received_at, tz=timezone.utc).isoformat()}
 
 
-# ── Count Endpoint ────────────────────────────────────────────────────────────
+# ── A project's dashboard ─────────────────────────────────────────────────────
 
-def _build_query(
-    project_id: Optional[str] = None,
-    device_id: Optional[str] = None,
-    trace_id: Optional[str] = None,
-    from_dt: Optional[datetime] = None,
-    to_dt: Optional[datetime] = None,
-) -> dict:
-    """Build a MongoDB query dict from common filter parameters."""
-    query: dict = {}
-    if trace_id:    query["trace_id"]   = trace_id
-    if project_id:  query["project_id"] = project_id
-    if device_id:   query["device_id"]  = device_id
-    if from_dt or to_dt:
-        query["received_at"] = {}
-        if from_dt: query["received_at"]["$gte"] = from_dt
-        if to_dt:   query["received_at"]["$lte"] = to_dt
-    return query
+@app.get("/p/{slug}")
+async def dashboard_no_slash(slug: str):
+    return RedirectResponse(f"/p/{slug}/", status_code=308)
 
 
-@app.get("/logs/count")
-async def logs_count(
-    request: Request,
-    project_id: Optional[str] = None,
-    device_id: Optional[str] = None,
-    trace_id: Optional[str] = None,
-    from_dt: Optional[datetime] = None,
-    to_dt: Optional[datetime] = None,
-    _auth: None = Depends(verify_dashboard_token),
-):
-    """
-    Return total count of logs matching the given filters.
-    Uses count_documents() which leverages indexes for performance.
-    """
+@app.get("/p/{slug}/")
+async def dashboard(request: Request, slug: str):
+    if slug not in request.app.state.projects:
+        raise HTTPException(status_code=404, detail="No such project")
+    return FileResponse(STATIC_DIR / "dashboard.html", media_type="text/html",
+                        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                                 "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/p/{slug}/api/meta")
+async def meta(project=Depends(dashboard_project)):
+    return {"project": {"slug": project.slug, "name": project.name},
+            "profile": public(project.profile), "retention_days": RETENTION_DAYS}
+
+
+@app.get("/p/{slug}/api/logs")
+async def list_logs(request: Request, page: int = 1, per_page: int = 50, project=Depends(dashboard_project)):
     col = request.app.state.mongo_col
-    query = _build_query(project_id, device_id, trace_id, from_dt, to_dt)
-    # estimatedDocumentCount() uses collection metadata (O(1)) when no filters are
-    # active — avoids a full aggregation scan on a multi-million-doc collection.
-    if not query:
-        total = await col.estimated_document_count()
-    else:
-        total = await col.count_documents(query)
-    return {"total": total}
+    query = _query(project, request)
+    per_page = min(max(per_page, 1), PER_PAGE_MAX)
+    page = min(max(page, 1), 100_000 // per_page)
+    # Bodies the list never shows stay in MongoDB until a row is opened.
+    left_out = {path: 0 for path in PROFILES[project.profile].get("list_exclude", [])} or None
+    cursor = (col.find(query, left_out)
+              .sort([("received_at", pymongo.DESCENDING), ("_id", pymongo.DESCENDING)])
+              .skip((page - 1) * per_page).limit(per_page).max_time_ms(QUERY_MS))
+    try:
+        items = [_plain(doc) async for doc in cursor]
+    except pymongo.errors.ExecutionTimeout as error:
+        raise HTTPException(status_code=503, detail="That search took too long -- narrow the dates") from error
+    try:
+        total = await col.count_documents(query, maxTimeMS=COUNT_MS)
+    except pymongo.errors.ExecutionTimeout:
+        total = None            # the page shows "many" and still pages forward
+    return {"page": page, "per_page": per_page, "total": total, "items": items}
 
 
-# ── Query Endpoint ────────────────────────────────────────────────────────────
+@app.get("/p/{slug}/api/logs/{log_id}")
+async def one_log(request: Request, log_id: str, project=Depends(dashboard_project)):
+    try:
+        oid = ObjectId(log_id)
+    except InvalidId as error:
+        raise HTTPException(status_code=404, detail="No such log") from error
+    doc = await request.app.state.mongo_col.find_one({"_id": oid, "project_id": project.slug})
+    if doc is None:
+        raise HTTPException(status_code=404, detail="No such log")
+    return _plain(doc)
 
-@app.get("/logs")
-async def query_logs(
-    request: Request,
-    project_id: Optional[str] = None,
-    device_id: Optional[str] = None,
-    trace_id: Optional[str] = None,
-    from_dt: Optional[datetime] = None,
-    to_dt: Optional[datetime] = None,
-    limit: int = 100,
-    last_id: Optional[str] = None,
-    skip: int = 0,
-    _auth: None = Depends(verify_dashboard_token),
-):
-    """
-    Fetch logs with optional filters and pagination.
 
-    Filters (all optional, AND logic):
-      - project_id:  exact match on project identifier
-      - device_id:   exact match on device identifier
-      - trace_id:    exact match on request trace ID
-      - from_dt:     logs received at or after this datetime
-      - to_dt:       logs received at or before this datetime
+@app.get("/p/{slug}/api/suggest")
+async def suggest(request: Request, filter: str, prefix: str = "", project=Depends(dashboard_project)):
+    """Up to 20 values of a filter's field seen in the last 30 days, most
+    frequent first, optionally starting with `prefix`."""
+    field = suggest_field(project.profile, filter)
+    if field is None:
+        raise HTTPException(status_code=400, detail="That filter has no suggestions")
+    match = {"project_id": project.slug,
+             "received_at": {"$gte": datetime.now(timezone.utc) - timedelta(days=SUGGEST_DAYS)},
+             field: {"$type": "string", "$ne": ""}}
+    if prefix.strip():
+        match[field]["$regex"] = f"^{re.escape(prefix.strip())}"
+        match[field]["$options"] = "i"
+    pipeline = [{"$match": match}, {"$group": {"_id": f"${field}", "n": {"$sum": 1}}},
+                {"$sort": {"n": -1}}, {"$limit": 20}]
+    try:
+        rows = await request.app.state.mongo_col.aggregate(pipeline, maxTimeMS=COUNT_MS).to_list(20)
+    except pymongo.errors.ExecutionTimeout:
+        rows = []
+    return {"values": [row["_id"] for row in rows]}
 
-    Pagination (two modes, skip takes precedence over last_id):
-      - skip/limit:  offset-based for numbered page navigation
-      - last_id:     cursor-based for infinite scroll (legacy)
-      - Results sorted by _id descending (newest first).
 
-    Limit: 1–1000, default 100. Skip: 0–100000.
-    """
+@app.get("/p/{slug}/api/export")
+async def export(request: Request, project=Depends(dashboard_project)):
+    """The filtered logs, newest first, as a JSON file (at most 50,000)."""
     col = request.app.state.mongo_col
-    query = _build_query(project_id, device_id, trace_id, from_dt, to_dt)
+    query = _query(project, request)
 
-    # Cursor-based pagination (legacy, used only if skip is 0 and last_id set)
-    if last_id and skip == 0:
-        try:
-            query["_id"] = {"$lt": ObjectId(last_id)}
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid last_id cursor")
-
-    limit = min(max(limit, 1), 1000)
-    skip = min(max(skip, 0), 100_000)
-
-    cursor = col.find(query).sort("_id", -1)
-    if skip > 0:
-        cursor = cursor.skip(skip)
-    docs = await cursor.limit(limit).to_list(limit)
-
-    results = []
-    for doc in docs:
-        doc["id"] = str(doc.pop("_id"))
-        if isinstance(doc.get("received_at"), datetime):
-            dt = doc["received_at"]
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            doc["received_at"] = dt.isoformat()
-        results.append(doc)
-
-    next_cursor = results[-1]["id"] if len(results) == limit else None
-
-    return {
-        "count":       len(results),
-        "next_cursor": next_cursor,
-        "logs":        results,
-    }
-
-
-# ── Export Endpoint ───────────────────────────────────────────────────────────
-
-@app.get("/logs/export")
-async def export_logs(
-    request: Request,
-    project_id: Optional[str] = None,
-    device_id: Optional[str] = None,
-    trace_id: Optional[str] = None,
-    from_dt: Optional[datetime] = None,
-    to_dt: Optional[datetime] = None,
-):
-    """
-    Stream all matching logs as a JSON file download.
-    Iterates through results in batches of 500 to avoid loading
-    everything into memory at once.
-    """
-    col = request.app.state.mongo_col
-    query = _build_query(project_id, device_id, trace_id, from_dt, to_dt)
-
-    async def stream_docs():
+    async def stream():
         yield "[\n"
-        cursor = col.find(query).sort("_id", -1)
         first = True
+        cursor = col.find(query).sort([("received_at", pymongo.DESCENDING), ("_id", pymongo.DESCENDING)]) \
+            .limit(EXPORT_MAX)
         async for doc in cursor:
-            doc["id"] = str(doc.pop("_id"))
-            if isinstance(doc.get("received_at"), datetime):
-                doc["received_at"] = doc["received_at"].isoformat()
-            prefix = "  " if first else ",\n  "
+            yield ("  " if first else ",\n  ") + json.dumps(_plain(doc), default=str)
             first = False
-            yield prefix + json.dumps(doc, default=str)
         yield "\n]\n"
 
-    filename = f"logs_export_{project_id or 'all'}_{datetime.now().strftime('%Y%m%d')}.json"
-    return StreamingResponse(
-        stream_docs(),
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    name = f"{project.slug}-logs-{datetime.now(timezone.utc):%Y%m%d-%H%M}.json"
+    return StreamingResponse(stream(), media_type="application/json",
+                             headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
-# ── Admin Endpoints — protected by X-Admin-Token header ──────────────────────
+# ── Admin ─────────────────────────────────────────────────────────────────────
 
 @app.get("/admin/dlq")
-async def inspect_dlq(
-    request: Request,
-    limit: int = 50,
-    _: None = Depends(verify_admin_token),
-):
-    """Inspect dead-letter queue entries. Requires X-Admin-Token header."""
-    redis: Redis = request.app.state.redis
-    entries = await redis.xrange("logs_dlq", count=min(limit, 500))
+async def inspect_dlq(request: Request, limit: int = 50, _: None = Depends(verify_admin_token)):
+    entries = await request.app.state.redis.xrange("logs_dlq", count=min(limit, 500))
     return {"count": len(entries), "entries": entries}
 
 
 @app.post("/admin/dlq/replay")
-async def replay_dlq(
-    request: Request,
-    _: None = Depends(verify_admin_token),
-):
-    """Move all DLQ entries back to main stream for reprocessing."""
+async def replay_dlq(request: Request, _: None = Depends(verify_admin_token)):
     redis: Redis = request.app.state.redis
     entries = await redis.xrange("logs_dlq", count=1000)
     if not entries:
         return {"replayed": 0, "message": "DLQ is empty"}
-
     pipe = redis.pipeline()
     skip_keys = {"reason", "failed_at", "original_id"}
     for entry_id, data in entries:
-        replay_data = {k: v for k, v in data.items() if k not in skip_keys}
-        pipe.xadd("logs_stream", replay_data, maxlen=500_000, approximate=True)
+        pipe.xadd("logs_stream", {k: v for k, v in data.items() if k not in skip_keys},
+                  maxlen=500_000, approximate=True)
         pipe.xdel("logs_dlq", entry_id)
     await pipe.execute()
     return {"replayed": len(entries)}

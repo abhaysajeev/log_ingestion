@@ -1,0 +1,8 @@
+{
+  "byky-qa": {
+    "name": "BYKY QA",
+    "profile": "byky",
+    "ingest_key": "replace-with-64-hex-chars-from-scripts-add_project.py-0000000000",
+    "dashboard_token": "replace-with-64-hex-chars-from-scripts-add_project.py-1111111111"
+  }
+}

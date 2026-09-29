@@ -1,337 +1,154 @@
 ================================================================================
  LOG INGESTION PLATFORM — DEPLOYMENT GUIDE
- Repo   : https://github.com/abhaysajeev/log_ingestion
- VPS    : DOCKERCUSTOVIA (Ubuntu, sudo required for docker)
- Stack  : FastAPI · Redis · MongoDB · Worker (x2) · Nginx · Backup
+ Repo    : https://github.com/abhaysajeev/log_ingestion
+ Host    : the old QA VPS (108.181.201.77, user administrator, sudo for docker)
+ Domain  : logs.softlandindia.net
+ Stack   : nginx · FastAPI · Redis · 2 workers · MongoDB · nightly backup
 ================================================================================
 
+What it is
+  Projects send logs to POST /ingest/batch with their own X-API-Key. Each
+  project has its own dashboard at https://logs.softlandindia.net/p/<slug>/,
+  opened by a link carrying that project's token, showing only its logs.
+  Logs are kept LOG_RETENTION_DAYS (45) and then deleted by MongoDB itself.
 
-PRE-FLIGHT CHECKLIST (do all before starting)
-────────────────────────────────────────────────────────────────────────────────
+Two ways to serve it — pick by what already holds ports 80/443 on the host:
 
-  □ VPS has Docker + Docker Compose installed
-  □ Ports 80 and 443 open in firewall / cloud security group
-  □ Domain A-record pointing to VPS IP (or use IP directly with self-signed SSL)
-  □ Git installed on VPS  (sudo apt install -y git)
-  □ Company SMTP credentials ready (host, port, username, password)
+  A. A reverse proxy already runs on the host
+     (the old QA VPS: the host's own nginx owns 80 and 443)
+     -> this stack listens on 127.0.0.1:8095 only; the host nginx gets one
+        more site that forwards logs.softlandindia.net there and holds the
+        certificate.  COMPOSE_FILE=docker-compose.yml:docker-compose.proxied.yml
+  B. Nothing on 80/443
+     -> this stack's nginx owns 80/443 and the certificate.
+        COMPOSE_FILE=docker-compose.yml:docker-compose.https.yml
+
+Resources: ~2.1 GB RAM at the configured limits (MongoDB 1.2 GB), ~150 MB of
+disk per 100k logs a day, 45 days kept; nightly backups, 7 kept.
 
 
 ════════════════════════════════════════════════════════════════════════════════
- STEP 1 — GET THE CODE
+ STEP 1 — DNS
 ════════════════════════════════════════════════════════════════════════════════
 
-  SSH into the VPS:
+  At the DNS provider for softlandindia.net add:
 
-    ssh administrator@YOUR_VPS_IP
+    Type  A
+    Name  logs
+    Value 108.181.201.77
+    TTL   3600 (or Auto)
 
-  Clone from GitHub:
+  Check it has spread (from any machine):   dig +short logs.softlandindia.net
+  -> 108.181.201.77
 
-    cd /home/administrator
+
+════════════════════════════════════════════════════════════════════════════════
+ STEP 2 — CODE AND SECRETS
+════════════════════════════════════════════════════════════════════════════════
+
+    cd ~
     git clone https://github.com/abhaysajeev/log_ingestion.git
     cd log_ingestion
-
-
-════════════════════════════════════════════════════════════════════════════════
- STEP 2 — CREATE & POPULATE .env
-════════════════════════════════════════════════════════════════════════════════
-
-  Copy the template:
-
-    cp .env.example .env
+    cp .env.example .env && chmod 600 .env
     nano .env
+      MONGO_PASSWORD=<openssl rand -hex 16>
+      ADMIN_TOKEN=<openssl rand -hex 32>
+      LOG_RETENTION_DAYS=45
+      COMPOSE_FILE=docker-compose.yml:docker-compose.proxied.yml     (way A)
+      LOGS_LOCAL_PORT=8095                                            (way A; any free port)
+      SMTP_*  (optional: leave SMTP_HOST empty for no alert e-mails)
 
-  ── Generate strong secrets (run each, copy the output) ──────────────────────
+  Check LOGS_LOCAL_PORT is free:   sudo ss -ltn | grep ':8095 '   (no output = free)
 
-    openssl rand -hex 16    →  MONGO_PASSWORD
-    openssl rand -hex 32    →  API_KEY
-    openssl rand -hex 32    →  ADMIN_TOKEN
-    openssl rand -hex 32    →  DASHBOARD_TOKEN
+  Projects — one per sending system; prints its ingest key and dashboard link:
 
-  ── Fill in the file ─────────────────────────────────────────────────────────
+    python3 scripts/add_project.py byky-qa "BYKY QA" --profile byky \
+        --base-url https://logs.softlandindia.net
 
-    MONGO_PASSWORD=<generated>
-    API_KEY=<generated>
-    RATE_LIMIT_PER_DEVICE=5000
-    QUEUE_BACKPRESSURE_LIMIT=50000
-    ADMIN_TOKEN=<generated>
-    DASHBOARD_TOKEN=<generated>
-
-    SMTP_HOST=smtp.office365.com        # your company SMTP server
-    SMTP_PORT=587                       # 587=STARTTLS, 465=SSL
-    SMTP_USER=alerts@yourcompany.com    # sender address
-    SMTP_PASSWORD=<smtp_password>
-    ALERT_EMAIL_TO=admin@yourcompany.com
-    ALERT_DLQ_THRESHOLD=10
-
-  Save: Ctrl+O  →  Enter  →  Ctrl+X
-
-  Protect the file:
-
-    chmod 600 .env
+  Keep the output: the ingest key goes to that project's server
+  (BYKY: LOG_INGEST_KEY in the new QA VPS .env), the dashboard link to the
+  people who read the logs. config/projects.json holds them; it is not in git.
 
 
 ════════════════════════════════════════════════════════════════════════════════
- STEP 3 — SSL CERTIFICATE
+ STEP 3 — START
 ════════════════════════════════════════════════════════════════════════════════
 
-  ── Option A: Real certificate with Let's Encrypt (RECOMMENDED) ──────────────
-
-    sudo apt install -y certbot
-
-    # Stop anything on port 80 temporarily if needed
-    sudo certbot certonly --standalone -d your-domain.com
-
-    # Copy certs into the Nginx certs folder
-    sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem nginx/certs/
-    sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem  nginx/certs/
-    sudo chown $USER:$USER nginx/certs/*.pem
-
-  ── Option B: Self-signed (internal / testing only) ──────────────────────────
-
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-      -keyout nginx/certs/privkey.pem \
-      -out    nginx/certs/fullchain.pem \
-      -subj "/CN=your-domain.com"
-
-  ── Update nginx.conf with your domain ───────────────────────────────────────
-
-    nano nginx/nginx.conf
-    # Change:  server_name _;
-    # To:      server_name your-domain.com;
+    sudo docker compose up -d --build
+    sudo docker compose ps               # all Up; fastapi and mongodb (healthy)
+    curl -s http://127.0.0.1:8095/health # way A: {"status":"ok",...}
 
 
 ════════════════════════════════════════════════════════════════════════════════
- STEP 4 — LAUNCH
+ STEP 4A — THE HOST'S NGINX (way A: the old QA VPS)
 ════════════════════════════════════════════════════════════════════════════════
 
-  Build images and start all services:
+  One new site; the existing sites are not touched.
 
-    sudo docker-compose up -d --build
+    sudo nano /etc/nginx/sites-available/logs.softlandindia.net
 
-  First run takes 3–5 minutes (pulls mongo:7, redis:7, python:3.12, nginx:alpine
-  images and builds FastAPI + Worker containers).
+    server {
+        listen 80;
+        listen [::]:80;
+        server_name logs.softlandindia.net;
+        client_max_body_size 8m;              # ingest batches
+        location / {
+            proxy_pass http://127.0.0.1:8095;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 60s;
+        }
+    }
 
-  Watch startup logs:
+    sudo ln -s /etc/nginx/sites-available/logs.softlandindia.net /etc/nginx/sites-enabled/
+    sudo nginx -t && sudo systemctl reload nginx
+    curl -s http://logs.softlandindia.net/health        # needs step 1's DNS
+    sudo certbot --nginx -d logs.softlandindia.net      # certificate + HTTPS redirect
 
-    sudo docker-compose logs -f
-
-
-════════════════════════════════════════════════════════════════════════════════
- STEP 5 — VERIFY DEPLOYMENT
-════════════════════════════════════════════════════════════════════════════════
-
-  5a. All containers healthy
-  ─────────────────────────
-    sudo docker-compose ps
-
-    Expected output (all "Up" or "Up (healthy)"):
-      log-ingestion-nginx-1     Up
-      log-ingestion-fastapi-1   Up (healthy)
-      log-ingestion-worker-1    Up
-      log-ingestion-worker-2    Up
-      log-ingestion-redis-1     Up (healthy)
-      log-ingestion-mongodb-1   Up (healthy)
-      log-ingestion-backup-1    Up
-
-  5b. Health endpoint
-  ───────────────────
-    curl -k https://localhost/health
-    # Expected: {"status":"ok","queue_depth":0,"dlq_depth":0}
-
-  5c. Ingest a test log
-  ──────────────────────
-    curl -k -X POST https://localhost/ingest/batch \
-      -H "X-API-Key: YOUR_API_KEY_HERE" \
-      -H "Content-Type: application/json" \
-      -d '{
-        "logs": [{
-          "project_id": "test_project",
-          "device_id":  "test_device_01",
-          "form_data":  {"screen": "home"},
-          "log":        {"level": "info", "message": "deployment verified"}
-        }]
-      }'
-    # Expected: {"accepted":1,"trace_id":"...","queued_at":"..."}
-
-  5d. Query the log back (after 5 seconds for worker flush)
-  ──────────────────────────────────────────────────────────
-    sleep 5
-    curl -k -H "X-Dashboard-Token: YOUR_DASHBOARD_TOKEN_HERE" \
-      "https://localhost/logs?project_id=test_project"
-    # Expected: {"logs":[{...}],"next_cursor":null}
-
-  5e. Open the dashboard in browser
-  ──────────────────────────────────
-    https://your-domain.com/dashboard
-    # Enter DASHBOARD_TOKEN when prompted
-    # Select project_id = test_project → click Search
-    # Should show the test log
-
-  5f. Verify MongoDB indexes
-  ───────────────────────────
-    MONGO_PW=$(grep MONGO_PASSWORD .env | cut -d= -f2)
-    sudo docker exec -it log-ingestion-mongodb-1 \
-      mongosh -u admin -p "$MONGO_PW" logsdb \
-      --eval "db.logs.getIndexes().forEach(i => print(i.name))"
-
-    # Expected index names:
-    #   _id_
-    #   project_time
-    #   device_time
-    #   project_device_time
-    #   trace_id
-    #   ttl_30_days        ← auto-deletes logs after 30 days
-
-  5g. Verify worker consumers active
-  ────────────────────────────────────
-    sudo docker exec log-ingestion-redis-1 \
-      redis-cli XINFO CONSUMERS logs_stream workers
-    # Should show 2 consumers (one per worker replica)
-
-  5h. Existing SMS service still running
-  ───────────────────────────────────────
-    sudo docker ps --format "table {{.Names}}\t{{.Status}}"
-    # parking-sms-service should show "Up X weeks (healthy)"
+  (No certbot yet?  sudo apt install -y certbot python3-certbot-nginx)
+  certbot renews on its own timer and reloads nginx.
 
 
 ════════════════════════════════════════════════════════════════════════════════
- STEP 6 — CONFIGURE ALERT EMAILS
+ STEP 4B — THIS STACK OWNS 80/443 (way B)
 ════════════════════════════════════════════════════════════════════════════════
 
-  Once SMTP is set in .env, alerts fire automatically when the Dead‑Letter Queue
-  depth hits ALERT_DLQ_THRESHOLD (default 10).
+    # COMPOSE_FILE=docker-compose.yml:docker-compose.https.yml in .env
+    # nginx needs a certificate to start, and must be up to answer certbot --
+    # so start with a temporary self-signed one:
+    openssl req -x509 -nodes -days 1 -newkey rsa:2048 -subj "/CN=logs.softlandindia.net" \
+      -keyout nginx/certs/privkey.pem -out nginx/certs/fullchain.pem
+    sudo docker compose up -d
+    sudo certbot certonly --webroot -w "$PWD/certbot/www" -d logs.softlandindia.net
+    sudo cp /etc/letsencrypt/live/logs.softlandindia.net/{fullchain,privkey}.pem nginx/certs/
+    sudo docker compose exec nginx nginx -s reload
 
-  To test the SMTP connection manually:
-
-    python3 -c "
-    import smtplib, os
-    host = os.getenv('SMTP_HOST'); port = int(os.getenv('SMTP_PORT','587'))
-    user = os.getenv('SMTP_USER'); pw   = os.getenv('SMTP_PASSWORD')
-    with smtplib.SMTP(host, port) as s:
-        s.starttls(); s.login(user, pw); print('SMTP OK')
-    " # run after loading env vars
-
-
-════════════════════════════════════════════════════════════════════════════════
- STEP 7 — SET UP SSL AUTO-RENEWAL (Let's Encrypt only)
-════════════════════════════════════════════════════════════════════════════════
-
-  Add a crontab entry to renew certs and reload nginx:
-
-    sudo crontab -e
-
-  Add this line (runs at 2 AM daily):
-
-    0 2 * * * certbot renew --quiet && \
-      cp /etc/letsencrypt/live/your-domain.com/fullchain.pem /home/administrator/log_ingestion/nginx/certs/ && \
-      cp /etc/letsencrypt/live/your-domain.com/privkey.pem  /home/administrator/log_ingestion/nginx/certs/ && \
-      docker exec log-ingestion-nginx-1 nginx -s reload
+  Renewal: put the same copy + reload in /etc/letsencrypt/renewal-hooks/deploy/logs.sh
 
 
 ════════════════════════════════════════════════════════════════════════════════
- STEP 8 — DAILY OPERATIONS
+ STEP 5 — CHECK
 ════════════════════════════════════════════════════════════════════════════════
 
-  View resource usage:
-    sudo docker stats --no-stream
-
-  View live logs (all services):
-    sudo docker-compose logs -f
-
-  View logs for one service:
-    sudo docker-compose logs -f fastapi
-    sudo docker-compose logs -f worker
-
-  Check queue / DLQ depth:
-    sudo docker exec log-ingestion-redis-1 redis-cli XLEN logs_stream
-    sudo docker exec log-ingestion-redis-1 redis-cli XLEN logs_dlq
-
-  Total records in MongoDB:
-    MONGO_PW=$(grep MONGO_PASSWORD .env | cut -d= -f2)
-    sudo docker exec log-ingestion-mongodb-1 \
-      mongosh -u admin -p "$MONGO_PW" logsdb \
-      --eval "db.logs.countDocuments()"
-
-  MongoDB shell:
-    MONGO_PW=$(grep MONGO_PASSWORD .env | cut -d= -f2)
-    sudo docker exec -it log-ingestion-mongodb-1 \
-      mongosh -u admin -p "$MONGO_PW" logsdb
-
-  Stop all services:
-    sudo docker-compose down
-
-  Restart single service:
-    sudo docker-compose restart fastapi
-
-  Pull latest code and redeploy:
-    git pull origin main
-    sudo docker-compose up -d --build
+    curl -s https://logs.softlandindia.net/health
+    Open the dashboard link from step 2 in a browser: the project's name in the
+    top bar, its logs listed newest first.
 
 
 ════════════════════════════════════════════════════════════════════════════════
- TROUBLESHOOTING
+ DAY TO DAY
 ════════════════════════════════════════════════════════════════════════════════
 
-  PROBLEM: Container stuck in "Starting" / not healthy
-  ──────────────────────────────────────────────────────
-    sudo docker-compose logs fastapi
-    sudo docker-compose logs mongodb
-    # Look for: auth error, port conflict, disk full
-
-  PROBLEM: MongoDB auth error on startup
-  ───────────────────────────────────────
-    # Only do this if the DB is empty / fresh deploy
-    sudo docker-compose down -v           # ← deletes data volumes!
-    sudo docker-compose up -d --build
-
-  PROBLEM: 502 Bad Gateway from Nginx
-  ─────────────────────────────────────
-    # FastAPI not healthy yet — wait 30s after start
-    sudo docker-compose ps               # check fastapi health
-    sudo docker exec log-ingestion-nginx-1 nginx -s reload
-
-  PROBLEM: Port 80/443 already in use
-  ─────────────────────────────────────
-    sudo ss -tlnp | grep -E ":80 |:443 "
-    # Kill or move the conflicting process
-
-  PROBLEM: Logs not appearing in dashboard after ingest
-  ───────────────────────────────────────────────────────
-    # Check worker is consuming from Redis
-    sudo docker exec log-ingestion-redis-1 redis-cli XLEN logs_stream
-    sudo docker-compose logs worker
-    # If DLQ is non-zero, check logs_dlq for error details
-    sudo docker exec log-ingestion-redis-1 \
-      redis-cli XRANGE logs_dlq - + COUNT 5
-
-  PROBLEM: Dashboard shows 401 / locked out
-  ───────────────────────────────────────────
-    # Check DASHBOARD_TOKEN in .env is correctly set
-    # Open dashboard in fresh tab (sessionStorage cleared)
-    grep DASHBOARD_TOKEN .env
-
-  PROBLEM: Backup not running
-  ─────────────────────────────
-    sudo docker-compose logs backup
-    # Check MONGODB_URL env var and that mongodump is available in image
-
-
-════════════════════════════════════════════════════════════════════════════════
- QUICK REFERENCE — ALL PORTS & ENDPOINTS
-════════════════════════════════════════════════════════════════════════════════
-
-  External (via Nginx HTTPS):
-    POST  https://domain/ingest/batch         Device log ingestion  (X-API-Key)
-    GET   https://domain/health               Health check           (public)
-    GET   https://domain/dashboard            Log dashboard          (login prompt)
-    GET   https://domain/logs                 Query logs             (X-Dashboard-Token)
-    GET   https://domain/logs/distinct        Dropdown autocomplete  (X-Dashboard-Token)
-    GET   https://domain/logs/export          Bulk JSON export       (X-Dashboard-Token)
-    GET   https://domain/admin/dlq            DLQ viewer             (X-Admin-Token)
-
-  Internal (container network only):
-    FastAPI   : http://fastapi:8000
-    Redis     : redis:6379
-    MongoDB   : mongodb:27017
-
-================================================================================
+  Update:          git pull && sudo docker compose up -d --build
+  New project:     python3 scripts/add_project.py <slug> "<Name>" [--profile byky]
+                   sudo docker compose restart fastapi
+  Revoke a link:   python3 scripts/add_project.py <slug> --rotate
+                   sudo docker compose restart fastapi   (old key and link stop)
+  Retention:       LOG_RETENTION_DAYS in .env, then  sudo docker compose up -d fastapi
+                   (changed in place; 0 keeps logs forever)
+  Backups:         ./backups/logs-YYYY-MM-DD.archive.gz, newest 7 kept
+  Restore:         sudo docker compose exec -T mongodb mongorestore -u admin -p "<MONGO_PASSWORD>" \
+                     --authenticationDatabase admin --gzip --archive < backups/<file>
+  Dead letters:    curl -H "X-Admin-Token: <ADMIN_TOKEN>" http://127.0.0.1:8095/admin/dlq
+  Disk:            df -h /    and    sudo docker system df

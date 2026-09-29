@@ -1,0 +1,9 @@
+# Behind the host's own reverse proxy, which owns 80/443 and the certificate
+# and forwards the log domain to 127.0.0.1:${LOGS_LOCAL_PORT:-8095}.
+# Loopback only: nothing outside the host reaches this port directly.
+services:
+  nginx:
+    ports:
+      - "127.0.0.1:${LOGS_LOCAL_PORT:-8095}:80"
+    volumes:
+      - ./nginx/http.conf:/etc/nginx/nginx.conf:ro
