@@ -143,6 +143,9 @@ disk per 100k logs a day, 45 days kept; nightly backups, 7 kept.
   Update:          git pull && sudo docker compose up -d --build
   New project:     python3 scripts/add_project.py <slug> "<Name>" [--profile byky]
                    sudo docker compose restart fastapi
+  Own token:       python3 scripts/add_project.py <slug> --token <your-token>
+                   sudo docker compose restart fastapi   (only the dashboard token
+                   changes; the ingest key and the sending server stay as they are)
   Revoke a link:   python3 scripts/add_project.py <slug> --rotate
                    sudo docker compose restart fastapi   (old key and link stop)
   Retention:       LOG_RETENTION_DAYS in .env, then  sudo docker compose up -d fastapi

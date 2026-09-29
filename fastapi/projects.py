@@ -37,7 +37,11 @@ from profiles import PROFILES
 
 PROJECTS_FILE = Path(os.getenv("PROJECTS_FILE", "/app/config/projects.json"))
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
-MIN_SECRET_LENGTH = 32
+# The ingest key is machine to machine: long and random. A dashboard token may
+# be anything a person chose (scripts/add_project.py --token) -- only never
+# empty, which would open the dashboard to everyone. Guessing a short one is
+# slowed by nginx's per-IP limit on /p/ (nginx/*.conf).
+MIN_INGEST_KEY_LENGTH = 32
 
 
 @dataclass(frozen=True)
@@ -69,9 +73,11 @@ def load(path: Path = PROJECTS_FILE) -> dict[str, Project]:
         if project.profile not in PROFILES:
             raise SystemExit(f"project '{slug}': unknown profile '{project.profile}' "
                              f"(one of {', '.join(sorted(PROFILES))})")
+        if len(project.ingest_key) < MIN_INGEST_KEY_LENGTH:
+            raise SystemExit(f"project '{slug}': ingest_key must be at least {MIN_INGEST_KEY_LENGTH} characters")
+        if not project.dashboard_token:
+            raise SystemExit(f"project '{slug}': dashboard_token is empty -- the dashboard would be open to anyone")
         for label, secret in (("ingest_key", project.ingest_key), ("dashboard_token", project.dashboard_token)):
-            if len(secret) < MIN_SECRET_LENGTH:
-                raise SystemExit(f"project '{slug}': {label} must be at least {MIN_SECRET_LENGTH} characters")
             if secret in keys:
                 raise SystemExit(f"project '{slug}': {label} is used twice -- every key and token must be unique")
             keys.add(secret)
