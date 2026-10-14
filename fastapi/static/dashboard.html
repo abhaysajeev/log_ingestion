@@ -30,6 +30,12 @@
     .live { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); cursor: pointer; user-select: none; }
     .live input { accent-color: var(--accent); }
 
+    .pillbar { background: var(--surface); padding: 10px 24px 0; display: flex; gap: 8px; }
+    .pillbar:empty { display: none; }
+    .pills { display: inline-flex; border: 1.5px solid var(--border); border-radius: 999px; overflow: hidden; }
+    .pill { border: 0; background: transparent; padding: 6px 18px; font: inherit; font-size: 13px; font-weight: 600; color: var(--text-2); cursor: pointer; }
+    .pill + .pill { border-left: 1.5px solid var(--border); }
+    .pill.on { background: var(--accent); color: #fff; }
     .filters { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
     .f { display: flex; flex-direction: column; gap: 4px; }
     .f label { font-size: 10.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .5px; }
@@ -104,7 +110,7 @@
     .toast.show { opacity: 1; transform: none; }
 
     @media (max-width: 760px) {
-      .topbar, .filters, .bar, .table-wrap, .pager { padding-left: 14px; padding-right: 14px; }
+      .topbar, .pillbar, .filters, .bar, .table-wrap, .pager { padding-left: 14px; padding-right: 14px; }
       .f, .f input, .f select, .f.wide input { width: 100%; }
       .f-actions { margin-left: 0; width: 100%; }
       .brand-sub { display: none; }
@@ -124,6 +130,8 @@
     <button class="btn btn-ghost" id="exportBtn" type="button">Export</button>
   </div>
 </header>
+
+<div class="pillbar" id="pillbar"></div>
 
 <form class="filters" id="filters" autocomplete="off">
   <div class="f"><label for="f-from">From</label><input type="date" id="f-from" name="from"></div>
@@ -218,9 +226,35 @@
   });
 
   // ── filters, drawn from the profile ─────────────────────────────────────
+  // A "pills" filter is a row of buttons above the form, backed by a hidden
+  // input in it -- so the address bar, Export and Live carry it like any other.
+  var pillInputs = [];
+  function syncPills() {
+    pillInputs.forEach(function (p) {
+      Array.prototype.forEach.call(p.group.children, function (b) {
+        b.classList.toggle('on', b.dataset.value === p.input.value);
+      });
+    });
+  }
+
   function buildFilters() {
     var form = $('filters'), actions = form.querySelector('.f-actions');
     meta.profile.filters.forEach(function (spec) {
+      if (spec.kind === 'pills') {
+        var hidden = el('input'); hidden.type = 'hidden'; hidden.name = spec.key;
+        hidden.value = hidden.defaultValue = spec.default || 'all';
+        form.appendChild(hidden);
+        var group = el('div', 'pills'); group.setAttribute('aria-label', spec.label);
+        spec.options.concat(['all']).forEach(function (o) {
+          var b = el('button', 'pill', o === 'all' ? 'All' : o.toUpperCase());
+          b.type = 'button'; b.dataset.value = o;
+          b.addEventListener('click', function () { hidden.value = o; syncPills(); page = 1; load(); });
+          group.appendChild(b);
+        });
+        $('pillbar').appendChild(group);
+        pillInputs.push({ input: hidden, group: group });
+        return;
+      }
       var box = el('div', 'f' + (spec.wide ? ' wide' : ''));
       var id = 'f-' + spec.key;
       var label = el('label', null, spec.label); label.htmlFor = id; box.appendChild(label);
@@ -244,6 +278,7 @@
       if (f.name && here.has(f.name)) f.value = here.get(f.name);
     });
     page = Math.max(1, parseInt(here.get('page') || '1', 10) || 1);
+    syncPills();
   }
 
   function attachSuggestions(input, key, box) {
@@ -283,7 +318,9 @@
     var td = el('td'), value = get(doc, col.path);
     switch (col.format) {
       case 'time': td.className = 't-time'; td.textContent = fmtTime(value || doc.received_at); break;
-      case 'tag': if (value) td.appendChild(el('span', 'tag', value)); break;
+      case 'tag':
+        value = value || col.fallback_text;
+        if (value) td.appendChild(el('span', 'tag', value)); break;
       case 'request':
         td.appendChild(el('span', 'method', get(doc, col.method) || ''));
         td.appendChild(el('span', 't-path', value || ''));
@@ -407,7 +444,7 @@
 
   // ── wiring ───────────────────────────────────────────────────────────────
   $('filters').addEventListener('submit', function (e) { e.preventDefault(); page = 1; load(); });
-  $('clearBtn').addEventListener('click', function () { $('filters').reset(); page = 1; load(); });
+  $('clearBtn').addEventListener('click', function () { $('filters').reset(); syncPills(); page = 1; load(); });
   $('prev').addEventListener('click', function () { if (page > 1) { page--; load(); } });
   $('next').addEventListener('click', function () { page++; load(); });
   $('live').addEventListener('change', function () {

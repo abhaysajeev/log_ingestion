@@ -7,6 +7,8 @@ project_id:
   project_newest       (project_id, received_at desc, _id desc)
                        -- the page sort itself, and date ranges
   project_device       (project_id, device_id, received_at desc)
+  project_env_newest   (project_id, log.environment, received_at desc, _id desc)
+                       -- the BYKY dashboard's qa | dev switch
   project_request_id   unique (project_id, log.request_id), only where a
                        request id exists: a log sent twice (a sender retry, a
                        worker replay) is stored once, and lookup by request id
@@ -46,6 +48,11 @@ async def ensure_indexes(col: AsyncIOMotorCollection):
     await col.create_index(
         [("project_id", pymongo.ASCENDING), ("device_id", pymongo.ASCENDING), ("received_at", pymongo.DESCENDING)],
         name="project_device",
+    )
+    await col.create_index(
+        [("project_id", pymongo.ASCENDING), ("log.environment", pymongo.ASCENDING),
+         ("received_at", pymongo.DESCENDING), ("_id", pymongo.DESCENDING)],
+        name="project_env_newest",
     )
     await col.create_index(
         [("project_id", pymongo.ASCENDING), ("log.request_id", pymongo.ASCENDING)],
