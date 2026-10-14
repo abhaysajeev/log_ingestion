@@ -20,6 +20,9 @@ Filter kinds:
   contains      substring, any case
   min_number    field >= the number given
   device        installation id, or the numeric device number
+  pills         one of `options`, drawn as buttons above the filters; "all"
+                (or nothing) = every value. `missing` names the option that
+                also matches logs without the field.
 """
 
 import re
@@ -33,6 +36,11 @@ PROFILES = {
         "title": "Device requests",
         "list_exclude": ["form_data", "log.response"],
         "filters": [
+            # Which BYKY copy sent the log: qa (:8007, older app builds) or dev
+            # (:8008) -- byky_django LOG_ENVIRONMENT. Logs sent before it was
+            # added (14 Oct 2026) carry none: they are qa's.
+            {"key": "env", "label": "Environment", "kind": "pills", "field": "log.environment",
+             "options": ["qa", "dev"], "default": "qa", "missing": "qa"},
             {"key": "request_id", "label": "Request ID", "kind": "exact", "field": "log.request_id",
              "placeholder": "X-Request-ID", "wide": True},
             {"key": "app", "label": "App", "kind": "select", "field": "log.app",
@@ -54,6 +62,7 @@ PROFILES = {
         ],
         "columns": [
             {"label": "Time", "path": "log.at", "format": "time"},
+            {"label": "Env", "path": "log.environment", "format": "tag", "fallback_text": "qa"},
             {"label": "App", "path": "log.app", "format": "tag"},
             {"label": "Request", "path": "log.path", "format": "request", "method": "log.method"},
             {"label": "Status", "path": "log.status", "format": "status"},
@@ -138,7 +147,18 @@ def build_query(profile_name: str, project_slug: str, params) -> dict:
         if not value:
             continue
         field, kind = spec["field"], spec["kind"]
-        if kind == "select":
+        if kind == "pills":
+            if value == "all":
+                continue
+            if value not in spec["options"]:
+                raise BadFilter(f"{spec['label']}: unknown value '{value}'")
+            # The `missing` option also matches logs that never carried the
+            # field ($in with None matches a missing field too).
+            if spec.get("missing") == value:
+                clauses.append({field: {"$in": [value, None]}})
+            else:
+                clauses.append({field: value})
+        elif kind == "select":
             if value not in spec["options"]:
                 raise BadFilter(f"{spec['label']}: unknown value '{value}'")
             clauses.append({field: value})
