@@ -43,7 +43,7 @@ from dependencies import (
 )
 from middleware import TracingMiddleware
 from models import MAX_BATCH, BatchIngestPayload
-from profiles import PROFILES, BadFilter, build_query, public, suggest_field
+from profiles import PROFILES, BadFilter, build_query, pills_fields, public, suggest_field
 
 uvloop.install()  # before any event loop exists
 
@@ -153,9 +153,22 @@ async def dashboard(request: Request, slug: str):
 
 
 @app.get("/p/{slug}/api/meta")
-async def meta(project=Depends(dashboard_project)):
+async def meta(request: Request, project=Depends(dashboard_project)):
+    # A pills switch (BYKY's environment) shows only the values this project's
+    # own logs carry -- byky-qa: qa | dev, byky-live: live. Both lookups are
+    # fenced to the project and walk the project_env_newest index.
+    col = request.app.state.mongo_col
+    present = {}
+    for key, field in pills_fields(project.profile).items():
+        fence = {"project_id": project.slug}
+        try:
+            values = await col.distinct(field, fence, maxTimeMS=COUNT_MS)
+            without = await col.find_one({**fence, field: None}, {"_id": 1}, max_time_ms=COUNT_MS)
+        except pymongo.errors.ExecutionTimeout:
+            continue            # too slow: the switch shows every declared option
+        present[key] = (values, without is not None)
     return {"project": {"slug": project.slug, "name": project.name},
-            "profile": public(project.profile), "retention_days": RETENTION_DAYS}
+            "profile": public(project.profile, present), "retention_days": RETENTION_DAYS}
 
 
 @app.get("/p/{slug}/api/logs")
