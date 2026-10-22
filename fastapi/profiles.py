@@ -22,7 +22,10 @@ Filter kinds:
   device        installation id, or the numeric device number
   pills         one of `options`, drawn as buttons above the filters; "all"
                 (or nothing) = every value. `missing` names the option that
-                also matches logs without the field.
+                also matches logs without the field. `options` is the
+                allow-list and the order; the dashboard shows only those the
+                project's own logs carry (main.py /api/meta), so each project
+                sees just its own environments.
 """
 
 import re
@@ -36,11 +39,14 @@ PROFILES = {
         "title": "Device requests",
         "list_exclude": ["form_data", "log.response"],
         "filters": [
-            # Which BYKY copy sent the log: qa (:8007, older app builds) or dev
-            # (:8008) -- byky_django LOG_ENVIRONMENT. Logs sent before it was
-            # added (14 Oct 2026) carry none: they are qa's.
+            # Which BYKY copy sent the log: qa (:8007, older app builds), dev
+            # (:8008) or live (production) -- byky_django LOG_ENVIRONMENT.
+            # Logs sent before it was added (14 Oct 2026) carry none: they are
+            # qa's. live ships to its own project (byky-live), so byky-qa's
+            # switch shows qa | dev and byky-live's shows live: each draws only
+            # the values its own logs carry (present_pills below).
             {"key": "env", "label": "Environment", "kind": "pills", "field": "log.environment",
-             "options": ["qa", "dev"], "default": "qa", "missing": "qa"},
+             "options": ["qa", "dev", "live"], "default": "qa", "missing": "qa"},
             {"key": "request_id", "label": "Request ID", "kind": "exact", "field": "log.request_id",
              "placeholder": "X-Request-ID", "wide": True},
             {"key": "app", "label": "App", "kind": "select", "field": "log.app",
@@ -106,12 +112,42 @@ class BadFilter(ValueError):
     """A filter value that cannot be used (not a number, unknown option)."""
 
 
-def public(profile_name: str) -> dict:
-    """What the dashboard needs to draw itself -- no field paths to query with."""
+def pills_fields(profile_name: str) -> dict:
+    """key -> field of each pills filter, for /api/meta to look up which values
+    a project's logs carry."""
+    return {f["key"]: f["field"] for f in PROFILES[profile_name]["filters"] if f["kind"] == "pills"}
+
+
+def present_pills(spec: dict, values, has_missing: bool):
+    """A pills filter cut down to the options a project's logs carry, in the
+    declared order -- or None (no switch at all) when it carries none. The
+    default falls back to the first option present."""
+    present = {v for v in values if isinstance(v, str)}
+    if has_missing and spec.get("missing"):
+        present.add(spec["missing"])
+    options = [o for o in spec["options"] if o in present]
+    if not options:
+        return None
+    default = spec.get("default")
+    return {**spec, "options": options, "default": default if default in options else options[0]}
+
+
+def public(profile_name: str, present: dict | None = None) -> dict:
+    """What the dashboard needs to draw itself -- no field paths to query with.
+
+    `present` maps a pills filter's key to (values seen, any log without the
+    field) for one project; a pills filter not in it keeps every option."""
     profile = PROFILES[profile_name]
+    filters = []
+    for spec in profile["filters"]:
+        if spec["kind"] == "pills" and present and spec["key"] in present:
+            spec = present_pills(spec, *present[spec["key"]])
+            if spec is None:
+                continue
+        filters.append({k: v for k, v in spec.items() if k not in ("field", "number_field")})
     return {
         "title": profile["title"],
-        "filters": [{k: v for k, v in f.items() if k not in ("field", "number_field")} for f in profile["filters"]],
+        "filters": filters,
         "columns": profile["columns"],
         "detail": profile["detail"],
     }

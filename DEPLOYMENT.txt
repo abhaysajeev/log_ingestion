@@ -69,6 +69,16 @@ disk per 100k logs a day, 45 days kept; nightly backups, 7 kept.
   (BYKY: LOG_INGEST_KEY in the new QA VPS .env), the dashboard link to the
   people who read the logs. config/projects.json holds them; it is not in git.
 
+  BYKY live (production) is a project of its own, so the byky-qa link never
+  shows real customers' requests:
+
+    python3 scripts/add_project.py byky-live "BYKY Live" --profile byky \
+        --base-url https://logs.softlandindia.net
+
+  Its ingest key goes to the live copy's .env (LOG_INGEST_KEY, with
+  LOG_ENVIRONMENT=live). byky-qa keeps the qa and dev copies. Each dashboard's
+  environment switch shows only the environments its own logs carry.
+
 
 ════════════════════════════════════════════════════════════════════════════════
  STEP 3 — START

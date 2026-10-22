@@ -8,7 +8,8 @@ project_id:
                        -- the page sort itself, and date ranges
   project_device       (project_id, device_id, received_at desc)
   project_env_newest   (project_id, log.environment, received_at desc, _id desc)
-                       -- the BYKY dashboard's qa | dev switch
+                       -- the BYKY dashboard's environment switch, and
+                       /api/meta's lookup of the environments present
   project_request_id   unique (project_id, log.request_id), only where a
                        request id exists: a log sent twice (a sender retry, a
                        worker replay) is stored once, and lookup by request id
