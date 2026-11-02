@@ -145,6 +145,22 @@ disk per 100k logs a day, 45 days kept; nightly backups, 7 kept.
     Open the dashboard link from step 2 in a browser: the project's name in the
     top bar, its logs listed newest first.
 
+    /health is 200 only when a log sent now would be stored: Redis up and below
+    80% of its memory, MongoDB up, workers alive and keeping up. Otherwise 503,
+    and its "checks" say which part failed. (/livez only says the API process
+    is up; Docker uses that one.)
+
+
+════════════════════════════════════════════════════════════════════════════════
+ STEP 6 — UPTIME MONITOR (so a failure tells someone)
+════════════════════════════════════════════════════════════════════════════════
+
+    Create a free HTTP monitor (e.g. UptimeRobot) on
+        https://logs.softlandindia.net/health
+    alerting when the answer is not 200, checked every 5 minutes.
+    Nothing alerted anyone on 2 Nov 2026, when a full Redis refused every log
+    for hours; this monitor would have.
+
 
 ════════════════════════════════════════════════════════════════════════════════
  DAY TO DAY
@@ -163,5 +179,13 @@ disk per 100k logs a day, 45 days kept; nightly backups, 7 kept.
   Backups:         ./backups/logs-YYYY-MM-DD.archive.gz, newest 7 kept
   Restore:         sudo docker compose exec -T mongodb mongorestore -u admin -p "<MONGO_PASSWORD>" \
                      --authenticationDatabase admin --gzip --archive < backups/<file>
+  Health:          curl -s http://127.0.0.1:8095/health      (503 + "checks" when failing)
   Dead letters:    curl -H "X-Admin-Token: <ADMIN_TOKEN>" http://127.0.0.1:8095/admin/dlq
+                   (MongoDB collection dead_letters; logs that could never be stored)
+  Replay them:     curl -X POST -H "X-Admin-Token: <ADMIN_TOKEN>" http://127.0.0.1:8095/admin/dlq/replay
+                   (only "max_deliveries" ones; parse errors would fail again)
+  Redis memory:    sudo docker compose exec redis redis-cli info memory | grep used_memory_human
+  Tests:           sudo docker compose -f docker-compose.test.yml run --rm tests
+                   sudo docker compose -f docker-compose.test.yml down -v
+                   (own Redis + MongoDB; never touches the running stack)
   Disk:            df -h /    and    sudo docker system df

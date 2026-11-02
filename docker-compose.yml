@@ -26,7 +26,9 @@ services:
       - PROJECTS_FILE=/app/config/projects.json
       - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-45}
       - RATE_LIMIT_PER_PROJECT=${RATE_LIMIT_PER_PROJECT:-60000}
-      - QUEUE_BACKPRESSURE_LIMIT=${QUEUE_BACKPRESSURE_LIMIT:-50000}
+      - QUEUE_BACKPRESSURE_LIMIT=${QUEUE_BACKPRESSURE_LIMIT:-10000}
+      - STREAM_MAXLEN=${STREAM_MAXLEN:-15000}
+      - REDIS_MEMORY_LIMIT=${REDIS_MEMORY_LIMIT:-0.8}
       - ADMIN_TOKEN=${ADMIN_TOKEN}
     volumes:
       # Per-project keys and tokens (scripts/add_project.py); restart fastapi
@@ -40,7 +42,10 @@ services:
     mem_limit: 400m
     memswap_limit: 400m
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # /livez: the process answers. /health (Redis, MongoDB, workers) is for
+      # the uptime monitor -- it may be 503 while they recover, and nginx
+      # must still start.
+      test: ["CMD", "curl", "-f", "http://localhost:8000/livez"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -57,10 +62,17 @@ services:
       --appendfsync everysec
       --maxmemory 128mb
       --maxmemory-policy noeviction
+      --auto-aof-rewrite-percentage 100
+      --auto-aof-rewrite-min-size 64mb
     volumes:
       - redis_data:/data
-    mem_limit: 200m
-    memswap_limit: 200m
+    # 2.5x maxmemory: an AOF rewrite forks, and the copy-on-write pages plus
+    # buffers must not push the container into an OOM kill.
+    mem_limit: 320m
+    memswap_limit: 320m
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -78,7 +90,6 @@ services:
       - WORKER_BATCH_SIZE=500
       - WORKER_FLUSH_INTERVAL_SECONDS=5
       - WORKER_MAX_RETRIES=3
-      - DLQ_STREAM=logs_dlq
       - MAIN_STREAM=logs_stream
       - CONSUMER_GROUP=workers
       - SMTP_HOST=${SMTP_HOST:-}
@@ -92,8 +103,21 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-    mem_limit: 100m
-    memswap_limit: 100m
+    # A full batch is up to 500 logs (each up to 8 MB in theory): 100m was an
+    # OOM kill waiting for one large batch.
+    mem_limit: 256m
+    memswap_limit: 256m
+    healthcheck:
+      # The loop touches /tmp/heartbeat every 10 s, even while it waits for
+      # MongoDB; an older file means the loop is stuck.
+      test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /tmp/heartbeat) )) -lt 60"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
 
   mongodb:
     image: mongo:7
@@ -106,10 +130,11 @@ services:
       MONGO_INITDB_DATABASE: logsdb
     command: >
       mongod
-      --wiredTigerCacheSizeGB 1
+      --wiredTigerCacheSizeGB 0.5
       --auth
     volumes:
       - mongo_data:/data/db
+    # WiredTiger's cache (0.5 GB) plus connections, index builds and sorts.
     mem_limit: 1200m
     memswap_limit: 1200m
     healthcheck:
@@ -117,6 +142,9 @@ services:
       interval: 10s
       timeout: 10s
       retries: 5
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
 
   # Nightly compressed dump into ./backups, the newest BACKUP_RETAIN_DAYS kept.
   # The mongo image ships mongodump (the old Python/FastAPI-image backup had
@@ -146,6 +174,9 @@ services:
         condition: service_healthy
     mem_limit: 300m
     memswap_limit: 300m
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
 
 volumes:
   redis_data:

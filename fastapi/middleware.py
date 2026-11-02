@@ -15,6 +15,15 @@ concurrency.
 
 import uuid
 
+MAX_TRACE_ID = 64
+
+
+def trace_id_from(raw: bytes | None) -> str:
+    """The client's X-Trace-ID, cleaned: undecodable bytes replaced, at most
+    MAX_TRACE_ID characters. A missing or blank one gets a fresh uuid4."""
+    value = raw.decode("utf-8", errors="replace").strip()[:MAX_TRACE_ID] if raw else ""
+    return value or str(uuid.uuid4())
+
 
 class TracingMiddleware:
     def __init__(self, app):
@@ -26,8 +35,7 @@ class TracingMiddleware:
             return
 
         headers_map = {k: v for k, v in scope.get("headers", [])}
-        raw = headers_map.get(b"x-trace-id")
-        trace_id = raw.decode() if raw else str(uuid.uuid4())
+        trace_id = trace_id_from(headers_map.get(b"x-trace-id"))
 
         scope.setdefault("state", {})
         scope["state"]["trace_id"] = trace_id

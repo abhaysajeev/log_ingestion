@@ -1,52 +1,61 @@
 """
-Async log ingestion worker — consumes from Redis Stream, writes to MongoDB.
+Async log ingestion worker -- consumes the Redis stream, stores logs in MongoDB.
 
-This module runs two concurrent async tasks:
+Two concurrent tasks:
 
-1. worker_loop  — reads new messages from the Redis Stream consumer group,
-                  batches them, and bulk-inserts into MongoDB every BATCH_SIZE
-                  messages or FLUSH_INTERVAL seconds (whichever comes first).
+1. worker_loop  -- on start, finishes this consumer's own unacknowledged
+                   messages (a restart of the same container); then reads new
+                   ones, batches them and stores them every BATCH_SIZE messages
+                   or FLUSH_INTERVAL seconds.
+2. janitor_loop -- every 30 s takes over messages another consumer left
+                   pending for over a minute (a crashed or recreated worker)
+                   and stores them the same way.
 
-2. janitor_loop — runs every 30 seconds, claims messages stuck in the Pending
-                  Entries List (PEL) for > 60 seconds from crashed workers via
-                  XAUTOCLAIM. Checks delivery count on reclaimed messages and
-                  routes poison pills to the dead-letter queue (DLQ) after
-                  MAX_RETRIES attempts.
+A stored, duplicate or dead-lettered message is XACK'd **and XDEL'd**: the
+stream only ever holds logs not yet in MongoDB. (Until 2 Nov 2026 messages were
+only XACK'd; the stream kept every log ever sent until Redis's 128 MB filled
+and every ingest failed.)
 
-Architecture fixes applied:
-  #2  — Consumer name includes os.getpid() — unique per Docker replica
-  #6  — DLQ writes use maxlen=10,000 — cannot grow unbounded
-  #11 — batch/msg_ids only cleared on insert SUCCESS — not in finally block
-  #12 — asyncio.get_running_loop() used throughout (not deprecated get_event_loop)
-  #13 — Motor connection pool capped at 5 per worker (shared budget with FastAPI)
+Failures:
+  - MongoDB down or slow: the batch is kept, nothing new is read, and the same
+    batch is retried with backoff (1 s .. 30 s). Memory stays flat; nothing is
+    dead-lettered for waiting.
+  - A log MongoDB can never store (too deep, int too big, ...): only that log
+    goes to the `dead_letters` collection; the rest of its batch is stored.
+  - A message that keeps crashing workers: dead-lettered once it has been
+    delivered more than MAX_DELIVERIES times.
 
-Data flow:
-  Redis Stream → XREADGROUP → build_document() → batch[] → insert_many() → XACK
-                                                         ↓ (on parse error)
-                                                     route_to_dlq()
+Every log's MongoDB _id is derived from its stream id (stream_object_id), so a
+message stored twice -- a redelivery, a takeover, a replay -- is one document.
 
-Document structure written to MongoDB:
+Document written to `logs`:
   {
-    trace_id:       "uuid4"              — from FastAPI middleware
-    received_at:    datetime (UTC)       — server ingestion time (authoritative)
-    project_id:     "proj_123"           — which project this log belongs to
-    device_id:      "device_abc"         — which device sent this log
-    form_data:      { ... }              — free-form JSON, client-defined
-    log:            { ... }              — free-form JSON, client-defined
+    _id:          ObjectId from the stream id
+    trace_id:     "uuid4"              -- from FastAPI middleware
+    received_at:  datetime (UTC)       -- server ingestion time (authoritative)
+    project_id:   "byky-qa"            -- from the API key
+    device_id:    "device_abc"
+    form_data:    { ... }              -- free-form JSON, client-defined
+    log:          { ... }              -- free-form JSON, client-defined
   }
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import smtplib
 import socket
+import struct
+import time
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 
+from bson import ObjectId
+from bson.errors import InvalidDocument
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import BulkWriteError
+from pymongo.errors import BulkWriteError, DuplicateKeyError, WriteError
 from redis.asyncio import Redis
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -61,14 +70,19 @@ log = logging.getLogger(__name__)
 
 REDIS_URL      = os.getenv("REDIS_URL", "redis://localhost:6379")
 MONGODB_URL    = os.getenv("MONGODB_URL")
+MONGO_DB       = os.getenv("MONGO_DB", "logsdb")
 BATCH_SIZE     = int(os.getenv("WORKER_BATCH_SIZE", "500"))
 FLUSH_INTERVAL = float(os.getenv("WORKER_FLUSH_INTERVAL_SECONDS", "5"))
-MAX_RETRIES    = int(os.getenv("WORKER_MAX_RETRIES", "3"))
+MAX_DELIVERIES = int(os.getenv("WORKER_MAX_RETRIES", "3"))
 MAIN_STREAM    = os.getenv("MAIN_STREAM", "logs_stream")
-DLQ_STREAM     = os.getenv("DLQ_STREAM", "logs_dlq")
 CONSUMER_GROUP = os.getenv("CONSUMER_GROUP", "workers")
+CLAIM_IDLE_MS  = int(os.getenv("WORKER_CLAIM_IDLE_MS", "60000"))
+JANITOR_EVERY  = float(os.getenv("WORKER_JANITOR_SECONDS", "30"))
+BACKOFF_MAX    = float(os.getenv("WORKER_BACKOFF_MAX_SECONDS", "30"))
+HEARTBEAT_TTL  = 30          # /health counts live workers by these keys
+HEARTBEAT_EVERY = 10
 
-# ── Email Alert Configuration ──────────────────────────────────────────────────────
+# ── Email Alert Configuration ─────────────────────────────────────────────────
 SMTP_HOST           = os.getenv("SMTP_HOST", "")
 SMTP_PORT           = int(os.getenv("SMTP_PORT", "587"))   # 587=STARTTLS, 465=SSL
 SMTP_USER           = os.getenv("SMTP_USER", "")           # sender email
@@ -76,34 +90,36 @@ SMTP_PASSWORD       = os.getenv("SMTP_PASSWORD", "")
 ALERT_EMAIL_TO      = os.getenv("ALERT_EMAIL_TO", "")      # recipient(s), comma-sep
 ALERT_DLQ_THRESHOLD = int(os.getenv("ALERT_DLQ_THRESHOLD", "10"))
 
-
-# fix #2: include PID so two replicas on same host get unique consumer names
-# Without this, two Docker containers sharing a hostname would fight over the
-# same PEL entries, causing duplicate processing and ACK races.
+# Unique per container: two replicas on one host never share a pending list.
 CONSUMER_NAME = f"worker-{socket.gethostname()}-{os.getpid()}"
+HEARTBEAT_KEY = f"worker:hb:{CONSUMER_NAME}"
+
+# Dead-letter reasons. Only REPLAYABLE ones are worth sending again.
+PARSE_ERROR      = "parse_error"
+INVALID_DOCUMENT = "invalid_document"
+MAX_DELIVERED    = "max_deliveries"
+
+# Set while a batch keeps failing to store: the janitor waits too, or it would
+# take over this worker's own waiting messages and count them as failures.
+_storing_fails = False
 
 
-# ── Email Alert ────────────────────────────────────────────────────────────
+# ── Email Alert ───────────────────────────────────────────────────────────────
 
-_last_alert_time: float = 0.0   # throttle — at most one alert per 30 min
+_last_alert_time: float = 0.0   # throttle -- at most one alert per 30 min
 
 
 def send_email_alert(subject: str, body: str) -> None:
-    """
-    Send an alert email via SMTP using company credentials.
-    Silently skips if SMTP_HOST, SMTP_USER, or ALERT_EMAIL_TO are not set.
-    Supports STARTTLS (port 587, default) and implicit SSL (port 465).
-    Throttled to at most one email per 30 minutes to prevent inbox flooding.
-    """
-    import time
+    """Send an alert email via SMTP. Silently skips if SMTP is not configured.
+    Blocking: call it through asyncio.to_thread."""
     global _last_alert_time
 
     if not SMTP_HOST or not SMTP_USER or not ALERT_EMAIL_TO:
-        return   # Not configured — skip silently
+        return
 
     now = time.time()
-    if now - _last_alert_time < 1800:   # 30-minute cooldown
-        log.debug("Email alert throttled — skipping")
+    if now - _last_alert_time < 1800:
+        log.debug("Email alert throttled -- skipping")
         return
     _last_alert_time = now
 
@@ -115,12 +131,10 @@ def send_email_alert(subject: str, body: str) -> None:
 
     try:
         if SMTP_PORT == 465:
-            # Implicit SSL (SMTPS)
             with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10) as server:
                 server.login(SMTP_USER, SMTP_PASSWORD)
                 server.sendmail(SMTP_USER, recipients, msg.as_string())
         else:
-            # STARTTLS (port 587 or 25)
             with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
                 server.ehlo()
                 server.starttls()
@@ -131,29 +145,32 @@ def send_email_alert(subject: str, body: str) -> None:
         log.warning(f"Alert email failed: {exc}")
 
 
-# ── Document Builder ──────────────────────────────────────────────────────────
+# ── Documents ─────────────────────────────────────────────────────────────────
 
-def build_document(entry: dict) -> dict:
-    """
-    Build a MongoDB document from a Redis Stream entry.
+def stream_object_id(stream_id: str) -> ObjectId:
+    """The ObjectId a stream message is stored under: its stream time (so the
+    dashboard's newest-first order holds) plus 8 bytes of a hash of the whole
+    id. The same message always maps to the same _id."""
+    ms = int(stream_id.split("-", 1)[0])
+    digest = hashlib.blake2b(stream_id.encode(), digest_size=8).digest()
+    return ObjectId(struct.pack(">I", (ms // 1000) & 0xFFFFFFFF) + digest)
 
-    Maps the client's payload fields (project_id, device_id, form_data, log)
-    directly into the MongoDB document. Worker adds server-side metadata
-    (trace_id, received_at).
 
-    received_at is stored as an epoch float in Redis (set by FastAPI) and
-    converted to a proper datetime here for MongoDB TTL index compatibility.
+def origin_id(msg_id: str, entry: dict) -> str:
+    """The id the log was first queued under -- a replayed dead letter carries
+    it as origin_id, so it is still stored as the same document."""
+    return entry.get("origin_id") or msg_id
 
-    Args:
-        entry: dict from Redis XREADGROUP with keys:
-               trace_id, received_at (epoch str), data (JSON str)
 
-    Returns:
-        dict ready for MongoDB insert_many()
-    """
+def build_document(msg_id: str, entry: dict) -> dict:
+    """A MongoDB document from a stream entry {trace_id, received_at, data}.
+    Raises on anything malformed (a parse error: dead-lettered)."""
     raw_data = json.loads(entry["data"])
+    if not isinstance(raw_data, dict):
+        raise ValueError("data is not a JSON object")
     received_ts = float(entry["received_at"])
     return {
+        "_id":         stream_object_id(origin_id(msg_id, entry)),
         "trace_id":    entry.get("trace_id"),
         "received_at": datetime.fromtimestamp(received_ts, tz=timezone.utc),
         "project_id":  raw_data.get("project_id"),
@@ -163,286 +180,287 @@ def build_document(entry: dict) -> dict:
     }
 
 
-# ── Dead-Letter Queue ────────────────────────────────────────────────────────
+# ── Dead letters (MongoDB) ────────────────────────────────────────────────────
 
-async def route_to_dlq(redis: Redis, msg_id: str, entry: dict, reason: str):
-    """
-    Move a failed message to the dead-letter queue.
-
-    Called when:
-      - build_document() throws a parse error (malformed JSON, missing fields)
-      - Janitor detects delivery count > MAX_RETRIES on a reclaimed message
-
-    The DLQ entry preserves the original data plus failure metadata:
-      - original_id: the Redis Stream message ID
-      - failed_at:   ISO timestamp of when routing occurred
-      - reason:      human-readable failure reason
-
-    fix #6: DLQ capped at 10,000 entries via maxlen to prevent unbounded growth
-    on a bad deployment. FIFO — oldest entries trimmed when cap is hit.
-
-    After XADD to DLQ, the message is XACK'd from the main stream so the
-    consumer group stops tracking it.
-    """
-    await redis.xadd(
-        DLQ_STREAM,
-        {
-            "original_id": msg_id,
-            "failed_at":   datetime.now(timezone.utc).isoformat(),
-            "reason":      reason,
-            **entry,
-        },
-        maxlen=10_000,      # fix #6: prevent unbounded DLQ growth
-        approximate=True,
-    )
-    await redis.xack(MAIN_STREAM, CONSUMER_GROUP, msg_id)
-    log.warning(f"Routed {msg_id} to DLQ: {reason}")
-
-
-# ── Batch Insert ──────────────────────────────────────────────────────────────
-
-async def insert_batch(col, docs: list[dict]) -> int:
-    """
-    Bulk insert documents into MongoDB with ordered=False.
-
-    ordered=False means MongoDB attempts ALL inserts even if some fail.
-    This maximizes throughput — a single bad document doesn't block the batch.
-
-    Duplicate key errors (code 11000) are silently ignored — this provides
-    idempotency. If a worker crashes after insert but before XACK, the
-    janitor reclaims the message. On retry, the duplicate insert is harmless.
-
-    All other errors (disk full, auth failure, etc.) are re-raised so the
-    caller does NOT clear the batch — messages stay in PEL for retry.
-
-    Args:
-        col: AsyncIOMotorCollection for the 'logs' collection
-        docs: list of dicts from build_document()
-
-    Returns:
-        Number of successfully inserted documents
-    """
+async def dead_letter(dead, msg_id: str, entry: dict, reason: str, error: str = "") -> None:
+    """Keep a message that can't be stored in `dead_letters`, keyed by its
+    original stream id (a second failure of the same message is one row).
+    Raises if MongoDB can't take it -- the caller then leaves the message
+    pending rather than lose it."""
+    sid = origin_id(msg_id, entry)
+    project = None
     try:
-        result = await col.insert_many(docs, ordered=False)
-        return len(result.inserted_ids)
+        project = json.loads(entry.get("data") or "{}").get("project_id")
+    except Exception:
+        pass
+    await dead.replace_one(
+        {"stream_id": sid},
+        {
+            "stream_id":  sid,
+            "project_id": project,
+            "reason":     reason,
+            "error":      str(error)[:2000],
+            "entry":      {k: v for k, v in entry.items() if k != "origin_id"},
+            "at":         datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )
+    log.warning(f"Dead-lettered {msg_id}: {reason} {str(error)[:200]}")
+
+
+# ── Acknowledge ───────────────────────────────────────────────────────────────
+
+async def done(redis: Redis, msg_ids: list[str]) -> None:
+    """XACK + XDEL in one round trip: the message is finished and leaves the
+    stream (and Redis memory)."""
+    if not msg_ids:
+        return
+    pipe = redis.pipeline(transaction=False)
+    pipe.xack(MAIN_STREAM, CONSUMER_GROUP, *msg_ids)
+    pipe.xdel(MAIN_STREAM, *msg_ids)
+    await pipe.execute()
+
+
+# ── Storing ───────────────────────────────────────────────────────────────────
+
+async def store(col, docs: list[dict]) -> dict[int, str]:
+    """Insert `docs`; returns {index: error} for documents MongoDB can never
+    store. Duplicates (11000) count as stored. Raises on anything that may
+    work later (MongoDB down, a write-concern error) -- nothing is lost, the
+    caller retries the same documents."""
+    if not docs:
+        return {}
+    try:
+        await col.insert_many(docs, ordered=False)
+        return {}
     except BulkWriteError as e:
-        inserted = e.details.get("nInserted", 0)
-        real_errors = [
-            err for err in e.details.get("writeErrors", [])
-            if err.get("code") != 11000
-        ]
-        if real_errors:
-            raise   # re-raise — caller keeps batch intact for retry
-        return inserted
+        if e.details.get("writeConcernErrors"):
+            raise
+        return {err["index"]: err.get("errmsg", "")
+                for err in e.details.get("writeErrors", []) if err.get("code") != 11000}
+    except (InvalidDocument, OverflowError):
+        # Refused by the driver before anything was sent: find the bad ones.
+        bad = {}
+        for i, doc in enumerate(docs):
+            try:
+                await col.insert_one(doc)
+            except DuplicateKeyError:
+                pass
+            except (InvalidDocument, OverflowError, WriteError) as err:
+                bad[i] = str(err)
+        return bad
 
 
-# ── Main Consumer Loop ────────────────────────────────────────────────────────
+async def store_messages(redis: Redis, col, dead, messages: list) -> int:
+    """Store one read's messages, dead-letter what can never be stored, then
+    ack + delete everything finished. Returns how many were stored.
 
-async def worker_loop(redis: Redis, col):
-    """
-    Main consumer loop — reads from Redis Stream and bulk-inserts to MongoDB.
+    Raises (nothing acknowledged) if MongoDB is unavailable."""
+    docs, doc_ids, finished = [], [], []
+    for msg_id, entry in messages:
+        if not entry:                      # deleted from the stream already
+            finished.append(msg_id)
+            continue
+        try:
+            docs.append(build_document(msg_id, entry))
+            doc_ids.append((msg_id, entry))
+        except Exception as e:
+            try:
+                await dead_letter(dead, msg_id, entry, PARSE_ERROR, repr(e))
+                finished.append(msg_id)
+            except Exception as dl_error:  # left pending; the janitor retries it
+                log.error(f"Could not dead-letter {msg_id}: {dl_error}")
 
-    Batching strategy:
-      - Accumulate up to BATCH_SIZE (500) documents before flushing
-      - OR flush every FLUSH_INTERVAL (5) seconds if batch is non-empty
-      - Whichever threshold is hit first triggers the flush
+    bad = await store(col, docs)           # raises: caller keeps the batch
+    for i, (msg_id, entry) in enumerate(doc_ids):
+        if i in bad:
+            try:
+                await dead_letter(dead, msg_id, entry, INVALID_DOCUMENT, bad[i])
+            except Exception as dl_error:
+                log.error(f"Could not dead-letter {msg_id}: {dl_error}")
+                continue
+        finished.append(msg_id)
+    await done(redis, finished)
+    return len(docs) - len(bad)
 
-    Why batching matters:
-      insert_many(500) is ~50x faster than 500 individual inserts because
-      it's a single MongoDB wire protocol round-trip with bulk write command.
 
-    Error handling (fix #11):
-      On insert failure, batch[] and msg_ids[] are NOT cleared. The messages
-      remain both in local memory for immediate retry AND in the Redis PEL.
-      If this worker dies, XAUTOCLAIM in the janitor reclaims them after 60s.
+# ── Heartbeat ─────────────────────────────────────────────────────────────────
 
-    XREADGROUP semantics:
-      - ">" means "give me only new, undelivered messages"
-      - block=1000 means "wait up to 1 second for new messages"
-      - When no messages arrive, the loop checks flush timer and retries
-    """
-    batch: list[dict] = []
-    msg_ids: list[str] = []
-    loop = asyncio.get_running_loop()   # fix #12: not get_event_loop()
+_last_heartbeat = 0.0
+HEARTBEAT_FILE = os.getenv("WORKER_HEARTBEAT_FILE", "/tmp/heartbeat")
+
+
+async def heartbeat(redis: Redis) -> None:
+    """The loop is alive: touch HEARTBEAT_FILE (the container healthcheck reads
+    its age) and refresh worker:hb:<name> (/health counts these)."""
+    global _last_heartbeat
+    now = time.monotonic()
+    if now - _last_heartbeat >= HEARTBEAT_EVERY:
+        try:
+            with open(HEARTBEAT_FILE, "w") as f:
+                f.write(datetime.now(timezone.utc).isoformat())
+        except OSError:
+            pass
+        _last_heartbeat = now
+        await redis.set(HEARTBEAT_KEY, datetime.now(timezone.utc).isoformat(), ex=HEARTBEAT_TTL)
+
+
+# ── Main consumer loop ────────────────────────────────────────────────────────
+
+async def recover_own_pending(redis: Redis, col, dead) -> None:
+    """Messages this consumer read but never finished (the container was
+    restarted mid-batch): store them before reading anything new."""
+    start = "0"
+    while True:
+        result = await redis.xreadgroup(CONSUMER_GROUP, CONSUMER_NAME, {MAIN_STREAM: start}, count=BATCH_SIZE)
+        entries = result[0][1] if result else []
+        if not entries:
+            return
+        stored = await store_messages(redis, col, dead, entries)
+        log.info(f"Recovered {stored}/{len(entries)} of this worker's pending messages")
+        start = entries[-1][0]
+
+
+async def worker_loop(redis: Redis, col, dead):
+    """Read, batch, store. While storing fails, read nothing new and retry the
+    same batch with exponential backoff."""
+    global _storing_fails
+    batch: list = []
+    loop = asyncio.get_running_loop()
     last_flush = loop.time()
+    failures = 0
 
-    log.info(f"Worker {CONSUMER_NAME} started — reading from {MAIN_STREAM}")
-
+    log.info(f"Worker {CONSUMER_NAME} started -- reading from {MAIN_STREAM}")
     while True:
         try:
-            # Read new messages from the consumer group
-            # block=1000ms — returns empty after 1s if no new messages,
-            # allowing the flush timer check to run
-            messages = await redis.xreadgroup(
-                CONSUMER_GROUP,
-                CONSUMER_NAME,
-                {MAIN_STREAM: ">"},
-                count=BATCH_SIZE,
-                block=1000,
-            )
+            await heartbeat(redis)
+            if failures == 0 and len(batch) < BATCH_SIZE:
+                result = await redis.xreadgroup(
+                    CONSUMER_GROUP, CONSUMER_NAME, {MAIN_STREAM: ">"},
+                    count=BATCH_SIZE - len(batch), block=1000,
+                )
+                for _, entries in result or []:
+                    batch.extend(entries)
 
-            if messages:
-                for _, entries in messages:
-                    for msg_id, entry in entries:
-                        try:
-                            doc = build_document(entry)
-                            batch.append(doc)
-                            msg_ids.append(msg_id)
-                        except Exception as e:
-                            # Malformed data — can never succeed, send to DLQ immediately
-                            await route_to_dlq(
-                                redis, msg_id, entry, f"parse_error: {e}"
-                            )
-
-            # Check if either flush condition is met
-            elapsed = loop.time() - last_flush   # fix #12
-            if batch and (len(batch) >= BATCH_SIZE or elapsed >= FLUSH_INTERVAL):
-                # fix #11: only clear batch and msg_ids on success
+            due = len(batch) >= BATCH_SIZE or loop.time() - last_flush >= FLUSH_INTERVAL
+            if batch and (due or failures):
                 try:
-                    inserted = await insert_batch(col, batch)
-                    # XACK all messages in one call — tells Redis these are processed
-                    await redis.xack(MAIN_STREAM, CONSUMER_GROUP, *msg_ids)
-                    log.info(
-                        f"Inserted {inserted}/{len(batch)} docs, "
-                        f"ACK'd {len(msg_ids)} messages"
-                    )
-                    # Clear only after confirmed success
-                    batch = []
-                    msg_ids = []
-                    last_flush = loop.time()
+                    stored = await store_messages(redis, col, dead, batch)
                 except Exception as e:
-                    log.error(
-                        f"Batch insert failed: {e} — "
-                        f"keeping {len(batch)} messages in local batch, "
-                        f"they remain in PEL for retry"
-                    )
-                    # Do NOT clear batch or msg_ids — retry on next iteration
-                    # XAUTOCLAIM janitor will reclaim after 60s if this worker dies
-                    last_flush = loop.time()  # reset timer to avoid tight retry loop
-
-        except Exception as e:
+                    failures += 1
+                    _storing_fails = True
+                    wait = min(BACKOFF_MAX, 2 ** (failures - 1))
+                    log.error(f"Storing {len(batch)} messages failed ({e}); retry {failures} in {wait:.0f}s")
+                    await asyncio.sleep(wait)
+                    continue
+                log.info(f"Stored {stored}/{len(batch)} messages")
+                batch, failures, _storing_fails = [], 0, False
+                last_flush = loop.time()
+            elif not batch:
+                last_flush = loop.time()
+        except Exception as e:                 # Redis trouble: keep the batch, try again
             log.error(f"Worker loop error: {e}")
             await asyncio.sleep(1)
 
 
-# ── Janitor Loop ──────────────────────────────────────────────────────────────
+# ── Janitor loop ──────────────────────────────────────────────────────────────
 
-async def janitor_loop(redis: Redis):
-    """
-    Periodic maintenance task — reclaims stuck messages from crashed workers.
+async def take_over_stuck(redis: Redis, col, dead) -> int:
+    """XAUTOCLAIM messages pending over CLAIM_IDLE_MS with any consumer, and
+    store them. A message delivered more than MAX_DELIVERIES times is the one
+    that keeps killing workers: dead-letter it instead. Follows XAUTOCLAIM's
+    cursor across the whole pending list, at most 10 pages per run."""
+    cursor, handled = "0-0", 0
+    for _ in range(10):
+        result = await redis.xautoclaim(MAIN_STREAM, CONSUMER_GROUP, CONSUMER_NAME,
+                                        min_idle_time=CLAIM_IDLE_MS, start_id=cursor, count=100)
+        cursor = result[0] if result else "0-0"
+        claimed = [(i, e) for i, e in (result[1] if result and len(result) > 1 else [])]
+        if claimed:
+            pending = await redis.xpending_range(MAIN_STREAM, CONSUMER_GROUP, min=claimed[0][0],
+                                                 max=claimed[-1][0], count=len(claimed),
+                                                 consumername=CONSUMER_NAME)
+            deliveries = {p["message_id"]: p["times_delivered"] for p in pending}
+            normal, finished = [], []
+            for msg_id, entry in claimed:
+                if entry and deliveries.get(msg_id, 1) > MAX_DELIVERIES:
+                    try:
+                        await dead_letter(dead, msg_id, entry, MAX_DELIVERED,
+                                          f"delivered {deliveries[msg_id]} times")
+                        finished.append(msg_id)
+                    except Exception as e:
+                        log.error(f"Could not dead-letter {msg_id}: {e}")
+                else:
+                    normal.append((msg_id, entry))
+            await done(redis, finished)
+            if normal:
+                await store_messages(redis, col, dead, normal)   # raises if MongoDB is down
+            handled += len(claimed)
+            log.info(f"Janitor took over {len(claimed)} stuck messages")
+        if cursor in ("0-0", "0"):
+            break
+    return handled
 
-    Runs every 30 seconds. Uses XAUTOCLAIM to transfer ownership of messages
-    that have been pending for > 60 seconds (min_idle_time=60000ms).
 
-    If a worker crashes between XREADGROUP and XACK, the message stays in the
-    Pending Entries List (PEL) indefinitely. Without the janitor, those logs
-    would be permanently lost. This is the zero-data-loss guarantee.
+async def alert_on_dead_letters(dead, since: datetime) -> datetime:
+    """Email when at least ALERT_DLQ_THRESHOLD new dead letters arrived since
+    the last check (growth, not depth: an old pile doesn't email forever)."""
+    now = datetime.now(timezone.utc)
+    new = await dead.count_documents({"at": {"$gte": since}})
+    if new >= ALERT_DLQ_THRESHOLD:
+        subject = f"[Log Ingestion] {new} logs could not be stored"
+        body = (
+            f"{new} logs were moved to dead_letters since {since.isoformat()}.\n"
+            f"Threshold : {ALERT_DLQ_THRESHOLD}\n"
+            f"Host      : {socket.gethostname()}\n\n"
+            f"Action    : check /admin/dlq.\n"
+        )
+        await asyncio.to_thread(send_email_alert, subject, body)
+        log.warning(f"{new} new dead letters >= {ALERT_DLQ_THRESHOLD} -- alert triggered")
+    return now
 
-    For each reclaimed message, the janitor checks the delivery count via
-    XPENDING. If a message has been delivered > MAX_RETRIES times, it's a
-    "poison pill" — something about it causes every worker to fail. These
-    are routed to the DLQ to prevent infinite retry loops.
 
-    XAUTOCLAIM parameters:
-      - min_idle_time=60000: only claim messages pending > 60 seconds
-      - start_id="0-0": scan from the beginning of the PEL
-      - count=100: process up to 100 stuck messages per cycle
-    """
+async def janitor_loop(redis: Redis, col, dead):
     log.info("Janitor started")
-    loop = asyncio.get_running_loop()   # fix #12
-
+    since = datetime.now(timezone.utc)
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(JANITOR_EVERY)
+        if _storing_fails:
+            continue                            # MongoDB is down: nothing to gain
         try:
-            # XAUTOCLAIM returns: [next_start_id, [(msg_id, data), ...], [deleted_ids]]
-            result = await redis.xautoclaim(
-                MAIN_STREAM,
-                CONSUMER_GROUP,
-                CONSUMER_NAME,
-                min_idle_time=60_000,
-                start_id="0-0",
-                count=100,
-            )
-            claimed = result[1] if result and len(result) > 1 else []
-            if claimed:
-                log.info(f"Janitor reclaimed {len(claimed)} stuck messages")
-
-                # Check delivery count on reclaimed messages — route to DLQ if exceeded
-                for msg_id, entry in claimed:
-                    # XPENDING with range [msg_id, msg_id] returns info for this message
-                    pending_info = await redis.xpending_range(
-                        MAIN_STREAM, CONSUMER_GROUP,
-                        min=msg_id, max=msg_id, count=1
-                    )
-                    times_delivered = (
-                        pending_info[0]["times_delivered"] if pending_info else 1
-                    )
-                    if times_delivered > MAX_RETRIES:
-                        await route_to_dlq(
-                            redis, msg_id, entry,
-                            f"max_retries ({MAX_RETRIES}) exceeded after reclaim"
-                        )
-
+            await take_over_stuck(redis, col, dead)
         except Exception as e:
             log.error(f"Janitor error: {e}")
-
-        # ── DLQ depth alert ───────────────────────────────────────────────────
         try:
-            dlq_depth = await redis.xlen(DLQ_STREAM)
-            if dlq_depth >= ALERT_DLQ_THRESHOLD:
-                hostname = socket.gethostname()
-                subject = f"[Log Ingestion] DLQ Alert — {dlq_depth} failed messages"
-                body = (
-                    f"WARNING: Dead-Letter Queue depth has reached {dlq_depth}\n"
-                    f"Threshold : {ALERT_DLQ_THRESHOLD}\n"
-                    f"Host      : {hostname}\n\n"
-                    f"Action    : Check /admin/dlq and investigate failed messages.\n"
-                    f"Time      : {datetime.now(timezone.utc).isoformat()}\n"
-                )
-                send_email_alert(subject, body)
-                log.warning(f"DLQ depth {dlq_depth} >= threshold {ALERT_DLQ_THRESHOLD} — alert triggered")
+            since = await alert_on_dead_letters(dead, since)
         except Exception as e:
-            log.error(f"DLQ depth check error: {e}")
+            log.error(f"Dead-letter check error: {e}")
 
 
-# ── Entry Point ───────────────────────────────────────────────────────────────
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def connect():
+    redis = Redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=10,
+                           socket_connect_timeout=5, health_check_interval=30)
+    mongo = AsyncIOMotorClient(MONGODB_URL, maxPoolSize=5, minPoolSize=1, serverSelectionTimeoutMS=5000)
+    db = mongo[MONGO_DB]
+    return redis, db["logs"], db["dead_letters"]
+
 
 async def main():
-    """
-    Initialize connections and run worker + janitor concurrently.
-
-    Both tasks run in the same asyncio event loop via asyncio.gather().
-    If either task fails fatally, the container restarts via Docker's
-    restart: unless-stopped policy.
-
-    Redis: single shared connection with decode_responses=True
-    MongoDB: Motor async client with connection pool capped at 5 (fix #13)
-    Consumer group: created idempotently on startup (same as FastAPI lifespan)
-    """
-    redis = Redis.from_url(REDIS_URL, decode_responses=True)
-
-    # Total MongoDB connections: 10 (FastAPI) + 5×4 (4 workers) = 30
-    mongo_client = AsyncIOMotorClient(
-        MONGODB_URL,
-        maxPoolSize=5,
-        minPoolSize=1,
-    )
-    col = mongo_client["logsdb"]["logs"]
-
-    # Create consumer group if it doesn't exist (idempotent)
-    # Same group created by FastAPI lifespan — whichever starts first wins
+    redis, col, dead = connect()
     try:
-        await redis.xgroup_create(
-            MAIN_STREAM, CONSUMER_GROUP, id="0", mkstream=True
-        )
+        await redis.xgroup_create(MAIN_STREAM, CONSUMER_GROUP, id="0", mkstream=True)
     except Exception:
-        pass  # Group already exists — expected on every restart
-
-    # Run both loops concurrently — gather() propagates exceptions
-    await asyncio.gather(
-        worker_loop(redis, col),
-        janitor_loop(redis),
-    )
+        pass  # the group already exists
+    while True:
+        try:
+            await recover_own_pending(redis, col, dead)
+            break
+        except Exception as e:                   # MongoDB not up yet: wait
+            log.error(f"Recovering pending messages failed: {e}; retrying in 5s")
+            await asyncio.sleep(5)
+    await asyncio.gather(worker_loop(redis, col, dead), janitor_loop(redis, col, dead))
 
 
 if __name__ == "__main__":

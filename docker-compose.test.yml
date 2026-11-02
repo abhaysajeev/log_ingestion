@@ -1,0 +1,52 @@
+# The test suite, against a real Redis and MongoDB of its own (nothing here
+# touches the running stack: separate project name, no volumes, no ports).
+#
+#   docker compose -f docker-compose.test.yml run --rm tests
+#   docker compose -f docker-compose.test.yml down       # afterwards
+#
+# The source is mounted, so the tests always run the code as it is now.
+name: log_ingestion_test
+
+services:
+  redis:
+    image: redis:7-alpine
+    # As in production: a fixed memory limit and no eviction.
+    command: redis-server --maxmemory 128mb --maxmemory-policy noeviction --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  mongodb:
+    image: mongo:7
+    command: mongod --wiredTigerCacheSizeGB 0.25
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  tests:
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
+    working_dir: /src
+    volumes:
+      - .:/src
+    environment:
+      REDIS_URL: redis://redis:6379
+      MONGODB_URL: mongodb://mongodb:27017
+      MONGO_DB: logs_test
+      PROJECTS_FILE: /src/tests/projects.test.json
+      ADMIN_TOKEN: test-admin-token-0123456789abcdef
+      WORKER_HEARTBEAT_FILE: /tmp/heartbeat
+      PYTHONDONTWRITEBYTECODE: "1"
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    # `pytest`, not `python -m pytest`: the latter puts /src on sys.path, where
+    # the folder fastapi/ is named like the fastapi package.
+    command: ["pytest", "-q", "-p", "no:cacheprovider", "tests"]
