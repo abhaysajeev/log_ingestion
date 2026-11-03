@@ -17,6 +17,10 @@ project_id:
   retention            TTL on received_at: LOG_RETENTION_DAYS (default 45);
                        0 keeps logs forever. Changing the number later updates
                        the index in place (collMod) -- no rebuild.
+
+dead_letters (logs the workers could never store, worker.dead_letter):
+  stream_id unique (one row per original message), reason_newest, and the
+  same retention on `at`.
 """
 
 import logging
@@ -63,9 +67,19 @@ async def ensure_indexes(col: AsyncIOMotorCollection):
     )
     await col.create_index([("trace_id", pymongo.ASCENDING)], name="trace_id", sparse=True)
     await ensure_retention(col, existing)
+    await ensure_dead_letter_indexes(col.database["dead_letters"])
 
 
-async def ensure_retention(col: AsyncIOMotorCollection, existing: dict):
+async def ensure_dead_letter_indexes(dead: AsyncIOMotorCollection):
+    """dead_letters: logs the workers could never store (worker.dead_letter).
+    One row per original stream id; same retention as the logs."""
+    existing = await dead.index_information()
+    await dead.create_index([("stream_id", pymongo.ASCENDING)], name="stream_id", unique=True)
+    await dead.create_index([("reason", pymongo.ASCENDING), ("at", pymongo.DESCENDING)], name="reason_newest")
+    await ensure_retention(dead, existing, field="at")
+
+
+async def ensure_retention(col: AsyncIOMotorCollection, existing: dict, field: str = "received_at"):
     seconds = RETENTION_DAYS * 86_400
     current = existing.get(TTL_NAME)
     # Each gunicorn worker runs this at start-up, so any step may find another
@@ -77,11 +91,11 @@ async def ensure_retention(col: AsyncIOMotorCollection, existing: dict):
                 log.info("log retention: keeping logs forever (TTL index dropped)")
             return
         if current is None:
-            await col.create_index([("received_at", pymongo.ASCENDING)], name=TTL_NAME,
+            await col.create_index([(field, pymongo.ASCENDING)], name=TTL_NAME,
                                    expireAfterSeconds=seconds)
         elif current.get("expireAfterSeconds") != seconds:
             await col.database.command("collMod", col.name,
                                        index={"name": TTL_NAME, "expireAfterSeconds": seconds})
     except pymongo.errors.OperationFailure:
         pass
-    log.info("log retention: %s days", RETENTION_DAYS)
+    log.info("%s retention: %s days", col.name, RETENTION_DAYS)

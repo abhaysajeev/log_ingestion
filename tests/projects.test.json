@@ -1,0 +1,8 @@
+{
+  "test-proj": {
+    "name": "Test project",
+    "profile": "generic",
+    "ingest_key": "test-ingest-key-00000000000000000000000000000000000000000000000000",
+    "dashboard_token": "test-dashboard-token-000000000000000000000000000000000000000000000"
+  }
+}
