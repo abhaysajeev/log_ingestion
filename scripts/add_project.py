@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FILE = ROOT / "config" / "projects.json"
-PROFILES = ("byky", "generic")
+PROFILES = ("byky", "sil-wam", "generic")
 
 
 def main():

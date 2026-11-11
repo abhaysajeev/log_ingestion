@@ -85,6 +85,50 @@ PROFILES = {
              "omit": ["response"]},
         ],
     },
+    # SIL WhatsApp Manager's API traffic (SIL-WAM app/monitoring/). /client-api,
+    # /agent-api and /webhook calls; Meta webhooks arrive as a summary (ids, types,
+    # statuses, error codes) with no message text. device_id is the company name.
+    "sil-wam": {
+        "title": "API requests",
+        "list_exclude": ["form_data", "log.response"],
+        "filters": [
+            # Which SIL-WAM copy sent the log -- its LOG_ENVIRONMENT. Only the
+            # values a project's own logs carry are drawn (present_pills).
+            {"key": "env", "label": "Environment", "kind": "pills", "field": "log.environment",
+             "options": ["live", "local"], "default": "live"},
+            {"key": "api", "label": "API", "kind": "select", "field": "log.api",
+             "options": ["client", "agent", "webhook"]},
+            {"key": "status", "label": "Status", "kind": "status_class", "field": "log.status",
+             "options": list(STATUS_CLASSES)},
+            {"key": "company", "label": "Company", "kind": "contains", "field": "log.company",
+             "placeholder": "Company name", "suggest": True},
+            {"key": "path", "label": "Endpoint", "kind": "contains", "field": "log.path",
+             "placeholder": "e.g. client-api/v1/services", "suggest": True},
+            {"key": "mobile", "label": "Mobile", "kind": "contains", "field": "log.mobile",
+             "placeholder": "e.g. 971589177070"},
+            {"key": "error", "label": "Error", "kind": "contains", "field": "log.error",
+             "placeholder": "e.g. customer_mobile"},
+            {"key": "slow", "label": "Slower than (ms)", "kind": "min_number", "field": "log.duration_ms",
+             "placeholder": "e.g. 1000"},
+        ],
+        "columns": [
+            {"label": "Time", "path": "log.at", "format": "time"},
+            {"label": "Env", "path": "log.environment", "format": "tag"},
+            {"label": "API", "path": "log.api", "format": "tag"},
+            {"label": "Request", "path": "log.path", "format": "request", "method": "log.method"},
+            {"label": "Status", "path": "log.status", "format": "status"},
+            {"label": "Time taken", "path": "log.duration_ms", "format": "ms"},
+            {"label": "Company", "path": "log.company", "format": "text"},
+            {"label": "Mobile", "path": "log.mobile", "format": "text"},
+            {"label": "Error", "path": "log.error", "format": "text"},
+        ],
+        "detail": [
+            {"label": "Request", "path": "form_data", "format": "json"},
+            {"label": "Response", "path": "log.response", "format": "json"},
+            {"label": "Details", "path": "log", "format": "fields",
+             "omit": ["response"]},
+        ],
+    },
     # Anything else: the original generic view.
     "generic": {
         "title": "Logs",
