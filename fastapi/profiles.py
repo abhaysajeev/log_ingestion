@@ -49,6 +49,12 @@ PROFILES = {
              "options": ["qa", "dev", "live"], "default": "qa", "missing": "qa"},
             {"key": "request_id", "label": "Request ID", "kind": "exact", "field": "log.request_id",
              "placeholder": "X-Request-ID", "wide": True},
+            # Every call of one order (24 Nov 2026): byky_django ships the
+            # orders a call was about in log.order_nos, a list -- an exact match
+            # on a list matches any of its values. Logs sent before that carry
+            # none. No suggest: /api/suggest groups whole values, not list items.
+            {"key": "order", "label": "Order no", "kind": "exact", "field": "log.order_nos",
+             "placeholder": "e.g. DUBPP110800000316", "wide": True},
             {"key": "app", "label": "App", "kind": "select", "field": "log.app",
              "options": ["operator", "manager", "employee"]},
             {"key": "status", "label": "Status", "kind": "status_class", "field": "log.status",
