@@ -65,6 +65,15 @@ async def ensure_indexes(col: AsyncIOMotorCollection):
         unique=True,
         partialFilterExpression={"log.request_id": {"$type": "string"}},
     )
+    # BYKY's Order no filter: log.order_nos is a list, so this is a multikey
+    # index; partial, so the logs of other projects (and older BYKY logs) are
+    # not in it.
+    await col.create_index(
+        [("project_id", pymongo.ASCENDING), ("log.order_nos", pymongo.ASCENDING),
+         ("received_at", pymongo.DESCENDING), ("_id", pymongo.DESCENDING)],
+        name="project_order_newest",
+        partialFilterExpression={"log.order_nos": {"$exists": True}},
+    )
     await col.create_index([("trace_id", pymongo.ASCENDING)], name="trace_id", sparse=True)
     await ensure_retention(col, existing)
     await ensure_dead_letter_indexes(col.database["dead_letters"])

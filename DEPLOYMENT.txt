@@ -79,6 +79,10 @@ disk per 100k logs a day, 45 days kept; nightly backups, 7 kept.
   LOG_ENVIRONMENT=live). byky-qa keeps the qa and dev copies. Each dashboard's
   environment switch shows only the environments its own logs carry.
 
+  The byky "Order no" filter reads log.order_nos, which byky_django ships from
+  its 24 Nov 2026 release on. Logs from an older BYKY copy carry none and are
+  not found by it. Its index (project_order_newest) is built at start-up.
+
 
 ════════════════════════════════════════════════════════════════════════════════
  STEP 3 — START
